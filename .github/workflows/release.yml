@@ -6,14 +6,15 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,23 +68,61 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
 
-      - uses: actions/setup-node@v4
+  npm:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install npm
+        run: npm install -g npm@11.21.1
 
       - name: Test npm launcher
         working-directory: npm
         run: npm test
 
-      - name: Set npm version
-        working-directory: npm
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
-
-      - name: Publish npm package
+      - name: Verify version matches tag
         working-directory: npm
         run: |
-          npm pack --dry-run
-          npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p 'require("./package.json").version')"
+          if [ "$package_version" != "$version" ]; then
+            echo "package.json version $package_version does not match tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - name: Check npm version
+        id: npm-version
+        working-directory: npm
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "@cnife/flyer@${version}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack npm launcher
+        if: steps.npm-version.outputs.exists != 'true'
+        working-directory: npm
+        run: npm pack --dry-run
+
+      - name: Publish npm launcher
+        if: steps.npm-version.outputs.exists != 'true'
+        working-directory: npm
+        run: |
+          tag=latest
+          case "$GITHUB_REF_NAME" in
+            *-*) tag=next ;;
+          esac
+          npm stage publish --tag "$tag"

@@ -192,28 +192,43 @@ curl -X POST https://flyer.cnife.cn/api/pages \
 
 ## 发布（维护者）
 
-推 `v*` tag 会触发 `.github/workflows/release.yml`：
+推 `v*` tag 会触发 `.github/workflows/release.yml`。先把 `npm/package.json` 的 `version` 改成与 tag 一致：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+# tag v0.1.1 -> npm/package.json version 0.1.1
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
-流程：`go test`/`go vet` → GoReleaser 生成 GitHub Releases（tar.gz/zip + 原始二进制 + `checksums.txt`）→ 构建并推送 GHCR 镜像 → 发布 npm `@cnife/flyer`。
+流程：`go test`/`go vet` → GoReleaser 生成 GitHub Releases（tar.gz/zip + 原始二进制 + `checksums.txt`）→ 构建并推送 GHCR 镜像 → npm job 用 OIDC 执行 `npm stage publish`。维护者再用 2FA 批准 staged 版本，包才公开：
 
-需要配置的 secret：
+```bash
+npm stage list
+npm stage approve <stage-id>
+```
 
-- `NPM_TOKEN`：npm 发布 token（首次发布用 token；之后可切到 npm Trusted Publishing）。
-- `GITHUB_TOKEN`：workflow 自带的 token，用于 GitHub Release 和 GHCR。
+不需要 `NPM_TOKEN`；workflow 只用 `GITHUB_TOKEN`（GitHub Release 和 GHCR）。
 
-本地校验：
+首次配置 Trusted Publishing：
+
+```bash
+npm login
+npm trust github @cnife/flyer \
+  --file release.yml \
+  --repo CNife/flyer \
+  --allow-stage-publish
+```
+
+也可以在 npmjs.com → 包 → Settings → Trusted Publisher 配置。配置后在 Publishing access 里选择 **Require 2FA and disallow tokens**。
+
+发布前本地校验：
 
 ```bash
 goreleaser check
 goreleaser release --snapshot --clean --skip=publish
 ```
 
-npm 包在 `npm/`，首次运行按平台从 GitHub Releases 下载原始二进制，校验 `checksums.txt` 后缓存。
+npm 包在 `npm/`，首次运行按平台从 GitHub Releases 下载原始二进制，校验 `checksums.txt` 后缓存。仓库必须保持公开；installer 匿名下载 Release 资产，私有仓库会返回 404。
 
 ## 开发
 
