@@ -86,7 +86,54 @@ Publish examples:
   flyer publish report.html --ttl 24h
   flyer publish report.html --permanent
   flyer publish report.html --password secret
+  flyer publish report.html --no-qr
+  flyer publish report.html --json
   cat report.html | flyer publish -
+
+Flags can appear before or after the file name. stdout is only the URL;
+metadata and the QR code go to stderr. Use "flyer <command> --help" for flags.
+`)
+}
+
+func isHelp(arg string) bool {
+	return arg == "help" || arg == "--help" || arg == "-h"
+}
+
+func printAdminUsage() {
+	fmt.Print(`flyer admin - server administration
+
+Usage:
+  flyer admin key create --name <name> [--role publisher] [--json]
+  flyer admin key list [--json]
+  flyer admin key revoke <id>
+  flyer admin stats [--json]
+  flyer admin cleanup [--json]
+
+All commands use the admin key from --admin-key, FLYER_ADMIN_KEY, or config.
+`)
+}
+
+func printAdminKeyUsage() {
+	fmt.Print(`flyer admin key - manage API keys
+
+Usage:
+  flyer admin key create --name <name> [--role publisher] [--json]
+  flyer admin key list [--json]
+  flyer admin key revoke <id>
+`)
+}
+
+func printConfigUsage() {
+	fmt.Print(`flyer config - client configuration
+
+Usage:
+  flyer config set server <url>
+  flyer config set key <publisher-key>
+  flyer config set admin-key <admin-key>
+  flyer config show
+  flyer config path
+
+The config file is created with mode 0600.
 `)
 }
 
@@ -101,6 +148,23 @@ func cmdPublish(args []string) error {
 	jsonOut := fs.Bool("json", false, "print JSON instead of a URL")
 	forceQR := fs.Bool("qr", false, "print a terminal QR code")
 	noQR := fs.Bool("no-qr", false, "do not print a QR code")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: flyer publish [file] [flags]
+
+Publish an HTML file, or read it from stdin with "-".
+
+Flags:
+`)
+		fs.PrintDefaults()
+		fmt.Fprint(fs.Output(), `
+Examples:
+  flyer publish report.html
+  flyer publish report.html --ttl 24h --no-qr
+  flyer publish report.html --password secret
+  flyer publish report.html --permanent --json
+  cat report.html | flyer publish -
+`)
+	}
 	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -173,6 +237,13 @@ func cmdDelete(args []string) error {
 	fs := newFlagSet("delete")
 	serverFlag := fs.String("server", "", "server URL")
 	keyFlag := fs.String("key", "", "API key")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: flyer delete <slug> [flags]
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
 	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -195,8 +266,9 @@ func cmdDelete(args []string) error {
 }
 
 func cmdAdmin(args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: flyer admin key|stats|cleanup")
+	if len(args) == 0 || isHelp(args[0]) {
+		printAdminUsage()
+		return nil
 	}
 	switch args[0] {
 	case "key", "keys":
@@ -206,13 +278,14 @@ func cmdAdmin(args []string) error {
 	case "cleanup":
 		return cmdAdminCleanup(args[1:])
 	default:
-		return fmt.Errorf("unknown admin command %q", args[0])
+		return fmt.Errorf("unknown admin command %q (try flyer admin --help)", args[0])
 	}
 }
 
 func cmdAdminKey(args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: flyer admin key create|list|revoke")
+	if len(args) == 0 || isHelp(args[0]) {
+		printAdminKeyUsage()
+		return nil
 	}
 	switch args[0] {
 	case "create":
@@ -379,8 +452,9 @@ func cmdAdminCleanup(args []string) error {
 }
 
 func cmdConfig(args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: flyer config set server|key|admin-key <value> | show | path")
+	if len(args) == 0 || isHelp(args[0]) {
+		printConfigUsage()
+		return nil
 	}
 	cfg, err := loadClientConfig()
 	if err != nil {
@@ -503,6 +577,10 @@ func cmdServe(args []string) error {
 func newFlagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: flyer %s [flags]\n\nFlags:\n", name)
+		fs.PrintDefaults()
+	}
 	return fs
 }
 
