@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -21,7 +22,8 @@ func TestWriteNewAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows 不报告 POSIX 权限位，0o600 无法在此断言。
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %o", info.Mode().Perm())
 	}
 	if info, err := os.Stat(dir + "/pages"); err != nil || !info.IsDir() {
