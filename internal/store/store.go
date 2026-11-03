@@ -69,13 +69,13 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	s := &Store{db: db, pagesDir: pagesDir}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS pages (
 );
 CREATE INDEX IF NOT EXISTS idx_pages_expires_at ON pages(expires_at);
 `
-	_, err := s.db.Exec(schema)
+	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
 }
 
@@ -120,17 +120,17 @@ func (s *Store) CreatePage(ctx context.Context, p Page, html []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if _, err := tmp.Write(html); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Chmod(0o640); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -149,7 +149,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.Slug, p.Title, p.FileName, p.PasswordHash, p.OwnerKeyID, p.Size,
 		p.CreatedAt.Unix(), unixPtr(p.ExpiresAt))
 	if err != nil {
-		os.Remove(dest)
+		_ = os.Remove(dest)
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed: pages.slug") {
 			return ErrSlugExists
 		}
@@ -162,6 +162,7 @@ func (s *Store) OpenPage(fileName string) (*os.File, error) {
 	if filepath.Base(fileName) != fileName || fileName == "" {
 		return nil, errors.New("invalid page file name")
 	}
+	//nolint:gosec // fileName 已由 Base == fileName 校验，限定在 pagesDir 内
 	return os.Open(filepath.Join(s.pagesDir, fileName))
 }
 
@@ -237,7 +238,7 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time, grace time.Duration)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type victim struct{ slug, file string }
 	var victims []victim
 	for rows.Next() {
@@ -282,7 +283,7 @@ func (s *Store) ListKeys(ctx context.Context) ([]Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var keys []Key
 	for rows.Next() {
 		var (

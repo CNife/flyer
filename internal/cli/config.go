@@ -28,6 +28,7 @@ func loadClientConfig() (ClientConfig, error) {
 	if err != nil {
 		return ClientConfig{}, err
 	}
+	//nolint:gosec // 路径来自本机用户配置目录，不是外部输入
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return ClientConfig{}, nil
@@ -62,17 +63,17 @@ func saveClientConfig(cfg ClientConfig) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

@@ -1,0 +1,44 @@
+# golangci-lint v2 配置。版本由 .github/workflows/ci.yml 的 with.version 固定，
+# 本地请装同一版本（Arch: pacman -S golangci-lint）。
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+  settings:
+    errcheck:
+      # CLI 往终端/响应体写失败时没有可恢复动作，单独判错只会淹没真正的错误。
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    revive:
+      rules:
+        # 所有包都在 internal/ 下，不构成对外 API，不要求导出符号写注释。
+        - name: exported
+          disabled: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - gosec
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

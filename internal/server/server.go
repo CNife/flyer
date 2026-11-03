@@ -70,13 +70,13 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) *Server {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("ok\n"))
+		_, _ = w.Write([]byte("ok\n"))
 	})
-	s.mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
+	s.mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("User-agent: *\nDisallow: /\n"))
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
 	s.mux.HandleFunc("POST /api/pages", s.handlePublish)
 	s.mux.HandleFunc("DELETE /api/pages/{slug}", s.handleDeletePage)
@@ -157,17 +157,17 @@ func (s *Server) authenticate(r *http.Request) (*identity, error) {
 	return &identity{keyID: &id, name: key.Name}, nil
 }
 
-func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (*identity, bool) {
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	id, err := s.authenticate(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
-		return nil, false
+		return false
 	}
 	if !id.isAdmin {
 		writeError(w, http.StatusForbidden, "admin key required")
-		return nil, false
+		return false
 	}
-	return id, true
+	return true
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
@@ -344,6 +344,7 @@ func (s *Server) handlePasswordSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if page.PasswordHash == "" {
+		//nolint:gosec // slug 已通过 auth.ValidSlug 校验，不构成开放重定向
 		http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
 		return
 	}
@@ -373,6 +374,7 @@ func (s *Server) handlePasswordSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderExpired(w)
 		return
 	}
+	//nolint:gosec // Secure 跟随 BaseURL：本地 http 部署必须允许非 Secure cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookie,
 		Value:    s.signer.Sign(slug, expires.Unix()),
@@ -383,6 +385,7 @@ func (s *Server) handlePasswordSubmit(w http.ResponseWriter, r *http.Request) {
 		Secure:   strings.HasPrefix(s.cfg.BaseURL, "https://"),
 		SameSite: http.SameSiteLaxMode,
 	})
+	//nolint:gosec // slug 已通过 auth.ValidSlug 校验，不构成开放重定向
 	http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
 }
 
@@ -420,7 +423,7 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request, page *store.P
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, page.FileName, page.CreatedAt, f)
@@ -431,7 +434,7 @@ func (s *Server) renderExpired(w http.ResponseWriter) {
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusGone)
-	w.Write([]byte("<!doctype html><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"><title>Expired</title><p>This page has expired.</p>"))
+	_, _ = w.Write([]byte("<!doctype html><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"><title>Expired</title><p>This page has expired.</p>"))
 }
 
 func (s *Server) renderPassword(w http.ResponseWriter, page *store.Page, errMsg string, status int) {
@@ -447,7 +450,7 @@ func (s *Server) renderPassword(w http.ResponseWriter, page *store.Page, errMsg 
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	st, err := s.store.Stats(r.Context(), s.now())
@@ -462,7 +465,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	n, err := s.store.Cleanup(r.Context(), s.now(), s.cfg.GracePeriod.Duration)
@@ -474,7 +477,7 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	keys, err := s.store.ListKeys(r.Context())
@@ -493,7 +496,7 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
@@ -532,7 +535,7 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -607,6 +610,7 @@ func (l *rateLimiter) allow(key string, now time.Time) (bool, time.Duration) {
 	return true, 0
 }
 
+//nolint:gosec // 登录页 HTML 模板，不是硬编码凭据
 const passwordPage = `<!doctype html>
 <html lang="en">
 <head>
