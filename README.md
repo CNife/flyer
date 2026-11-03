@@ -51,8 +51,12 @@ just --list  # 全部任务
 sudo useradd --system --home /opt/flyer --shell /usr/sbin/nologin flyer
 sudo install -d -o flyer -g flyer -m 0750 /opt/flyer
 
-# 二进制
-sudo install -o flyer -g flyer -m 0750 dist/flyer /opt/flyer/flyer
+# 二进制：生产部署使用 GitHub Release 资产，不要用本地 dist/flyer
+VERSION=0.2.0   # 替换为当前发布版本
+curl -fLO "https://github.com/CNife/flyer/releases/download/v${VERSION}/flyer_${VERSION}_linux_amd64"
+curl -fLO "https://github.com/CNife/flyer/releases/download/v${VERSION}/checksums.txt"
+grep " flyer_${VERSION}_linux_amd64$" checksums.txt | sha256sum -c -
+sudo install -o flyer -g flyer -m 0750 "flyer_${VERSION}_linux_amd64" /opt/flyer/flyer
 
 # 生成配置，stdout 会打印 admin key（只显示一次）
 sudo -u flyer /opt/flyer/flyer init-server \

@@ -134,9 +134,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Fetch base for release policy
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=1 origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+
+      - name: Release policy
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: scripts/release-policy.sh
 
       - name: Test npm launcher
         working-directory: npm
