@@ -64,6 +64,29 @@ type DeletePageResponse struct {
 	Deleted bool `json:"deleted"`
 }
 
+type Page struct {
+	Slug       string     `json:"slug"`
+	Title      string     `json:"title"`
+	URL        string     `json:"url"`
+	Size       int64      `json:"size"`
+	Protected  bool       `json:"protected"`
+	OwnerKeyID *int64     `json:"owner_key_id,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+}
+
+type PageListResponse struct {
+	Pages  []Page `json:"pages"`
+	Total  int64  `json:"total"`
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+}
+
+type ExpirePageResponse struct {
+	Expired   bool      `json:"expired"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type RevokeKeyResponse struct {
 	Revoked bool `json:"revoked"`
 }

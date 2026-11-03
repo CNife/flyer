@@ -356,3 +356,151 @@ func TestMalformedPublish(t *testing.T) {
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
+
+func createPublisherKey(t *testing.T, ts *httptest.Server, adminKey, name string) api.CreateKeyResponse {
+	t.Helper()
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/admin/keys", adminKey, api.CreateKeyRequest{Name: name})
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create key %s: status=%d body=%s", name, resp.StatusCode, data)
+	}
+	return decode[api.CreateKeyResponse](t, resp)
+}
+
+func TestListPages(t *testing.T) {
+	srv, cfg, ts := newTestServer(t, nil)
+	k1 := createPublisherKey(t, ts, cfg.AdminKey, "one")
+	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	srv.now = func() time.Time { return base }
+	first := publish(t, ts, k1.Key, api.PublishRequest{HTML: "first", Title: "First"})
+
+	srv.now = func() time.Time { return base.Add(time.Second) }
+	second := publish(t, ts, k1.Key, api.PublishRequest{HTML: "second", Title: "Second", Permanent: true})
+
+	srv.now = func() time.Time { return base.Add(2 * time.Second) }
+	publish(t, ts, k2.Key, api.PublishRequest{HTML: "other"})
+
+	srv.now = func() time.Time { return base.Add(3 * time.Second) }
+	adminPage := publish(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "admin"})
+
+	resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages", k1.Key, nil)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("list status=%d body=%s", resp.StatusCode, data)
+	}
+	list := decode[api.PageListResponse](t, resp)
+	if list.Total != 2 || len(list.Pages) != 2 || list.Limit != 100 || list.Offset != 0 {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+	if list.Pages[0].Slug != second.Slug || list.Pages[1].Slug != first.Slug {
+		t.Fatalf("unexpected order: %+v", list.Pages)
+	}
+	if list.Pages[0].ExpiresAt != nil || list.Pages[1].ExpiresAt == nil {
+		t.Fatalf("unexpected expiries: %+v", list.Pages)
+	}
+	if list.Pages[0].URL != "http://example.test/"+second.Slug {
+		t.Fatalf("unexpected URL: %q", list.Pages[0].URL)
+	}
+	if list.Pages[0].OwnerKeyID == nil || *list.Pages[0].OwnerKeyID != k1.ID {
+		t.Fatalf("unexpected owner: %+v", list.Pages[0])
+	}
+
+	resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages?limit=1&offset=1", k1.Key, nil)
+	paged := decode[api.PageListResponse](t, resp)
+	if paged.Total != 2 || len(paged.Pages) != 1 || paged.Pages[0].Slug != first.Slug {
+		t.Fatalf("unexpected paged list: %+v", paged)
+	}
+
+	resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages", cfg.AdminKey, nil)
+	all := decode[api.PageListResponse](t, resp)
+	if all.Total != 4 || len(all.Pages) != 4 || all.Pages[0].Slug != adminPage.Slug {
+		t.Fatalf("unexpected admin list: %+v", all)
+	}
+	if all.Pages[0].OwnerKeyID != nil {
+		t.Fatalf("admin page has owner: %+v", all.Pages[0])
+	}
+
+	for _, query := range []string{"limit=0", "limit=501", "limit=x", "offset=-1", "offset=x"} {
+		resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages?"+query, k1.Key, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d", query, resp.StatusCode)
+		}
+	}
+
+	resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing key status=%d", resp.StatusCode)
+	}
+}
+
+func TestExpirePage(t *testing.T) {
+	srv, cfg, ts := newTestServer(t, nil)
+	k1 := createPublisherKey(t, ts, cfg.AdminKey, "one")
+	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	srv.now = func() time.Time { return base }
+	page := publish(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
+
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k2.Key, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("other key expire status=%d", resp.StatusCode)
+	}
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing key expire status=%d", resp.StatusCode)
+	}
+
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k1.Key, nil)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("owner expire status=%d body=%s", resp.StatusCode, data)
+	}
+	expired := decode[api.ExpirePageResponse](t, resp)
+	if !expired.Expired || !expired.ExpiresAt.Equal(base) {
+		t.Fatalf("unexpected expire response: %+v", expired)
+	}
+
+	gone, err := http.Get(ts.URL + "/" + page.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone.Body.Close()
+	if gone.StatusCode != http.StatusGone {
+		t.Fatalf("expired page status=%d", gone.StatusCode)
+	}
+
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k1.Key, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second expire status=%d", resp.StatusCode)
+	}
+
+	permanent := publish(t, ts, k1.Key, api.PublishRequest{HTML: "forever", Permanent: true})
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+permanent.Slug+"/expire", k1.Key, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("permanent expire status=%d", resp.StatusCode)
+	}
+	gone, err = http.Get(ts.URL + "/" + permanent.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone.Body.Close()
+	if gone.StatusCode != http.StatusGone {
+		t.Fatalf("expired permanent page status=%d", gone.StatusCode)
+	}
+
+	adminExpire := publish(t, ts, k1.Key, api.PublishRequest{HTML: "admin can expire"})
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+adminExpire.Slug+"/expire", cfg.AdminKey, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin expire status=%d", resp.StatusCode)
+	}
+
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/notthere/expire", k1.Key, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing page expire status=%d", resp.StatusCode)
+	}
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/zz/expire", k1.Key, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("invalid slug expire status=%d", resp.StatusCode)
+	}
+}

@@ -17,6 +17,7 @@ import (
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrSlugExists = errors.New("slug already exists")
+	ErrExpired    = errors.New("page already expired")
 )
 
 type Page struct {
@@ -102,6 +103,7 @@ CREATE TABLE IF NOT EXISTS pages (
 	expires_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pages_expires_at ON pages(expires_at);
+CREATE INDEX IF NOT EXISTS idx_pages_owner_created ON pages(owner_key_id, created_at DESC, slug DESC);
 `
 	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
@@ -166,21 +168,20 @@ func (s *Store) OpenPage(fileName string) (*os.File, error) {
 	return os.Open(filepath.Join(s.pagesDir, fileName))
 }
 
-func (s *Store) GetPage(ctx context.Context, slug string) (*Page, error) {
+const pageColumns = `slug, title, file_name, password_hash, owner_key_id, size, created_at, expires_at`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanPage(row rowScanner) (*Page, error) {
 	var (
 		p       Page
 		owner   sql.NullInt64
 		created int64
 		expires sql.NullInt64
 	)
-	err := s.db.QueryRowContext(ctx, `
-SELECT slug, title, file_name, password_hash, owner_key_id, size, created_at, expires_at
-FROM pages WHERE slug = ?`, slug).
-		Scan(&p.Slug, &p.Title, &p.FileName, &p.PasswordHash, &owner, &p.Size, &created, &expires)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
+	if err := row.Scan(&p.Slug, &p.Title, &p.FileName, &p.PasswordHash, &owner, &p.Size, &created, &expires); err != nil {
 		return nil, err
 	}
 	if owner.Valid {
@@ -192,6 +193,80 @@ FROM pages WHERE slug = ?`, slug).
 		p.ExpiresAt = &t
 	}
 	return &p, nil
+}
+
+func (s *Store) GetPage(ctx context.Context, slug string) (*Page, error) {
+	p, err := scanPage(s.db.QueryRowContext(ctx, `
+SELECT `+pageColumns+`
+FROM pages WHERE slug = ?`, slug))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// ListPages returns pages newest first. A nil owner lists every page.
+func (s *Store) ListPages(ctx context.Context, ownerKeyID *int64, limit, offset int) ([]Page, int64, error) {
+	where, args := "", []any{}
+	if ownerKeyID != nil {
+		where, args = " WHERE owner_key_id = ?", []any{*ownerKeyID}
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pages`+where, args...).
+		Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	//nolint:gosec // where 只可能是空串或包内常量，所有值都走占位符
+	rows, err := s.db.QueryContext(ctx, `
+SELECT `+pageColumns+`
+FROM pages`+where+`
+ORDER BY created_at DESC, slug DESC
+LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	pages := make([]Page, 0, limit)
+	for rows.Next() {
+		p, err := scanPage(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		pages = append(pages, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return pages, total, nil
+}
+
+// ExpirePage makes a page expire at now without deleting its file.
+func (s *Store) ExpirePage(ctx context.Context, slug string, now time.Time) error {
+	ts := now.Unix()
+	res, err := s.db.ExecContext(ctx, `
+UPDATE pages SET expires_at = ?
+WHERE slug = ? AND (expires_at IS NULL OR expires_at > ?)`, ts, slug, ts)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pages WHERE slug = ?`, slug).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+	return ErrExpired
 }
 
 func (s *Store) DeletePage(ctx context.Context, slug string) error {
@@ -216,8 +291,8 @@ func (s *Store) Stats(ctx context.Context, now time.Time) (Stats, error) {
 	var st Stats
 	err := s.db.QueryRowContext(ctx, `
 SELECT COUNT(*),
-       COALESCE(SUM(CASE WHEN expires_at IS NULL OR expires_at >= ? THEN 1 ELSE 0 END), 0),
-       COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at < ? THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN expires_at IS NULL OR expires_at > ? THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 1 ELSE 0 END), 0),
        COALESCE(SUM(CASE WHEN expires_at IS NULL THEN 1 ELSE 0 END), 0),
        COALESCE(SUM(size), 0)
 FROM pages`, now.Unix(), now.Unix()).
