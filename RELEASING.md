@@ -9,6 +9,9 @@
 - npm 只用 OIDC staged publishing。禁止添加 `NPM_TOKEN`，禁止直接 `npm publish`。
 - GitHub Release 资产必须先于 npm 包可用；npm 包只是下载二进制的 launcher。
 - 已发布 tag 不移动、不删除。坏版本发补丁版并 `npm deprecate`。
+- 改发布内容的 PR 默认在同一个 PR bump `npm/package.json`；CI 的 release policy 会阻塞未 bump 的发布路径改动。
+- 要批量发版时，给 feature PR 加 `skip-version`，之后用发版 PR 统一 bump；Dependabot PR 自动带这个标签。
+- 生产部署只使用 GitHub Release 的 tag 资产；部署脚本属于维护者的 ops 层，不放进本仓库。
 - PR 合并和 `npm stage approve` 由维护者完成；除非维护者当场明确授权，agent 不代做。agent 不索取、不代输 2FA 代码。
 
 ## 发布链路
@@ -54,6 +57,7 @@ main commit
    ```
 
 3. 在分支上修改 `npm/package.json` 的 `version`。版本提交走 PR，不在 CI 里改写版本。
+   默认由 feature PR 自己 bump；批量发版时 feature PR 标 `skip-version`，在这里的发版 PR 统一 bump。版本已在 feature PR bump 时，不需要再开发版 PR；合并该 PR 后按「发版」从 main 打 tag，本地校验和 npm 404 检查仍建议执行。
 
 4. 本地校验：
 
@@ -132,6 +136,12 @@ npm view @cnife/flyer dist-tags --json
 
 agent 不索取、不代输 OTP。遇到 `EOTP` 时交给维护者交互完成。
 
+## 部署
+
+生产部署只使用 GitHub Release 的 tag 资产：原始二进制/压缩包 + `checksums.txt`。不要用 main 的 dev build（`git describe` 带 `-g...`）或本地 `dist/flyer`。
+
+部署脚本属于维护者的 ops 层，不放进本仓库；它应校验 tag、release 资产和 checksum，并在重启失败时保留上一版二进制用于回滚。仓库只保证发布产物契约。
+
 ## 发布后验证
 
 ```bash
@@ -173,6 +183,9 @@ npm trust github @cnife/flyer \
 |---|---|---|
 | `checksums.txt` 404 | Release 不存在，或仓库是 private | 先补 Release / 改 public；不要先发 npm |
 | workflow 报 version mismatch | tag 与 `npm/package.json` 不一致 | 发新的补丁版本；不要移动旧 tag |
+| release policy 报 release-related files 未 bump | 改了发布路径但没改版本 | bump `npm/package.json`，或加 `skip-version` 批量发版 |
+| release policy 报 skip-version 但版本变了 | 标了 `skip-version` 又 bump 了版本 | 移除标签，或撤销版本改动 |
+| release policy 报 base ref not found | CI 没有 fetch 到 base 分支 | 检查 `npm` job 的 Fetch base 步骤 |
 | `npm stage approve` 返回 `EOTP` | 需要交互式 2FA | 交给维护者在终端完成 |
 | staged 状态是 `validating` | 自动审核未完成 | 等待变为 `staged` 再批准 |
 | 刚发布后 `npm install` 报 `ETARGET` | registry 传播延迟 | 等 30–60 秒，用 `--prefer-online` 重试；不要重复发版 |
@@ -187,4 +200,5 @@ npm trust github @cnife/flyer \
 - 0.1.0 先发了 npm、后补 GitHub Release，且仓库当时是 private，导致 launcher 下载 `checksums.txt` 404。教训：Release 资产是 npm 包契约的一部分，仓库可见性也是分发的一部分。
 - 0.1.0 的旧 workflow 在 `Set npm version` 步骤失败，因为 CI 试图把版本改成已经是 0.1.0 的值。现在改为校验 tag 和 package.json，不在 CI 改写版本。
 - 0.1.1 通过 OIDC staged publish + 维护者 2FA 批准，产出了 provenance；`npm audit signatures` 验证通过。
+- 0.2.0 后加入 release policy：改发布路径的 PR 默认 bump，批量发版用 `skip-version`，避免合并后才补发版 PR。
 - registry 发布后可能有短暂传播延迟；`npm view` 和 `npm install` 不要用一次 404 判断发布失败。

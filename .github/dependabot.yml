@@ -8,6 +8,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels:
+      - skip-version
     groups:
       go-dependencies:
         patterns:
@@ -18,6 +20,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels:
+      - skip-version
     groups:
       github-actions:
         patterns:
@@ -28,9 +32,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels:
+      - skip-version
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels:
+      - skip-version
