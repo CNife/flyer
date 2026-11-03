@@ -1,0 +1,36 @@
+version: 2
+
+# 注意：ci.yml 里 GOLANGCI_LINT_VERSION / JUST_VERSION 是 action 的 with/env 值，
+# Dependabot 不会 bump 它们，升级时需要手动同步（Arch 仓库同样版本可直接对照）。
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /npm
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
