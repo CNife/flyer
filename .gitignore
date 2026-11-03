@@ -1,0 +1,7 @@
+/dist/
+/flyer
+*.db
+*.db-shm
+*.db-wal
+/pages/
+.env
