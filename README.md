@@ -26,7 +26,22 @@ go install github.com/CNife/flyer/cmd/flyer@latest
 ```bash
 go build -o dist/flyer ./cmd/flyer
 # 或
-make build
+just build
+```
+
+## 开发
+
+需要 Go 1.27+ 与 `just`；跑 lint 还需要 `golangci-lint`（版本与 CI 一致）。Arch：
+
+```bash
+sudo pacman -S just golangci-lint
+```
+
+```bash
+just setup   # 挂载 .githooks/pre-commit，每个 clone 一次
+just check   # 提交前快检：gofmt / go mod tidy / go vet / go test
+just ci      # 全量门禁：check + golangci-lint
+just --list  # 全部任务
 ```
 
 ## 服务端部署

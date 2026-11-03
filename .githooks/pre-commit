@@ -1,0 +1,21 @@
+#!/bin/sh
+# 提交前门禁：复用 just 的 recipe，与 CI 同一套命令。
+# 明确需要跳过时：git commit --no-verify
+set -eu
+
+# 合并提交直接放行
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+	exit 0
+fi
+
+# 没有 Go 源码、也没动 go.mod/go.sum 时无需跑测试
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '(^|/)go\.(mod|sum)$|\.go$'; then
+	exit 0
+fi
+
+if ! command -v just >/dev/null 2>&1; then
+	echo "pre-commit: 需要 just（pacman -S just）；跳过用 git commit --no-verify" >&2
+	exit 1
+fi
+
+exec just check
