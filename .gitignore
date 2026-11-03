@@ -5,3 +5,5 @@
 *.db-wal
 /pages/
 .env
+/npm/node_modules/
+/npm/*.tgz

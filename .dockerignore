@@ -1,0 +1,9 @@
+.git
+.github
+dist
+npm
+*.db
+*.db-shm
+*.db-wal
+pages
+.env
