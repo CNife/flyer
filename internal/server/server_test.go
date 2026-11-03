@@ -320,6 +320,26 @@ func TestKeysAndOwnership(t *testing.T) {
 	}
 }
 
+func TestPermanentPage(t *testing.T) {
+	srv, cfg, ts := newTestServer(t, nil)
+	page := publish(t, ts, cfg.AdminKey, api.PublishRequest{
+		HTML:      "forever",
+		Permanent: true,
+	})
+	if page.ExpiresAt != nil {
+		t.Fatalf("permanent page has expiry: %v", page.ExpiresAt)
+	}
+	srv.now = func() time.Time { return time.Now().Add(10 * 365 * 24 * time.Hour) }
+	resp, err := http.Get(ts.URL + "/" + page.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("permanent page status = %d", resp.StatusCode)
+	}
+}
+
 func TestMalformedPublish(t *testing.T) {
 	_, cfg, ts := newTestServer(t, nil)
 	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: ""}); resp.StatusCode != http.StatusBadRequest {
