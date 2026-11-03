@@ -40,7 +40,7 @@ sudo pacman -S just golangci-lint
 ```bash
 just setup   # 挂载 .githooks/pre-commit，每个 clone 一次
 just check   # 提交前快检：gofmt / go mod tidy / go vet / go test
-just ci      # 全量门禁：check + golangci-lint
+just ci      # 全量门禁：check + golangci-lint + govulncheck + actionlint
 just --list  # 全部任务
 ```
 

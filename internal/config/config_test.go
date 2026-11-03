@@ -35,7 +35,7 @@ func TestWriteNewAndLoad(t *testing.T) {
 	if loaded.AdminKey != cfg.AdminKey || loaded.SessionSecret != cfg.SessionSecret {
 		t.Fatal("secrets did not round-trip")
 	}
-	if loaded.DefaultTTL.Duration.String() != "1h0m0s" || loaded.MaxUploadBytes != DefaultMaxUpload {
+	if loaded.DefaultTTL.String() != "1h0m0s" || loaded.MaxUploadBytes != DefaultMaxUpload {
 		t.Fatalf("unexpected defaults: %+v", loaded)
 	}
 

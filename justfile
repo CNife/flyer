@@ -47,8 +47,16 @@ test-race:
 lint:
     golangci-lint run
 
+# 漏洞扫描（版本锁在 go.mod 的 tool 指令里）
+vuln:
+    go tool govulncheck ./...
+
+# 校验 workflow 语法
+workflows:
+    go tool actionlint
+
 # 提交前快检
 check: fmt-check tidy-check vet test
 
 # 本地全量门禁
-ci: check lint
+ci: check lint vuln workflows

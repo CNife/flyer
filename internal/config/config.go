@@ -37,7 +37,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 func (d Duration) MarshalText() ([]byte, error) {
-	return []byte(d.Duration.String()), nil
+	return []byte(d.String()), nil
 }
 
 type Config struct {
@@ -190,16 +190,17 @@ cleanup_interval = %q
 grace_period = %q
 `,
 		cfg.Listen, cfg.BaseURL, cfg.AdminKey, cfg.SessionSecret,
-		cfg.DefaultTTL.Duration.String(), cfg.MaxTTL.Duration.String(),
+		cfg.DefaultTTL.String(), cfg.MaxTTL.String(),
 		cfg.MaxUploadBytes, cfg.RateLimitPerHour,
-		cfg.CleanupInterval.Duration.String(), cfg.GracePeriod.Duration.String(),
+		cfg.CleanupInterval.String(), cfg.GracePeriod.String(),
 	)
+	//nolint:gosec // 路径由 CLI --dir 参数决定，O_EXCL 保证不覆盖既有配置
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return Config{}, fmt.Errorf("create %s: %w", path, err)
 	}
 	if _, err := f.WriteString(body); err != nil {
-		f.Close()
+		_ = f.Close()
 		return Config{}, err
 	}
 	if err := f.Close(); err != nil {

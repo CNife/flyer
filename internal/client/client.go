@@ -121,7 +121,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, adm
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var apiErr api.ErrorResponse

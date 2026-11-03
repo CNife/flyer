@@ -546,7 +546,7 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	logger := log.New(os.Stderr, "flyer: ", log.LstdFlags)
 	srv := server.New(cfg, st, logger)
 	httpSrv := &http.Server{

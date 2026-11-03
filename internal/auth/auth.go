@@ -106,6 +106,7 @@ func VerifyPassword(encoded, password string) (bool, error) {
 	if err != nil || len(want) == 0 {
 		return false, errors.New("invalid argon2 hash")
 	}
+	//nolint:gosec // keyLen 取自 want 的长度，受 hash 格式约束为 32 字节
 	got := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
