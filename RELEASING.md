@@ -112,7 +112,7 @@ gh release view "$TAG" --repo CNife/flyer --json assets --jq '.assets | length'
 
 ## npm staged 批准
 
-CI 成功后，npm 包处于 staged 状态，尚未公开：
+CI 成功后，npm 包处于 staged 状态，尚未公开。`npm stage` 需要 npm >= 11.15；workflow 固定使用 11.21.1，本地 npm 过旧会报 unknown command：
 
 ```bash
 npm stage list
@@ -166,19 +166,7 @@ npm trust github @cnife/flyer \
   --allow-stage-publish
 ```
 
-也可以在 npmjs.com → 包 → Settings → Trusted Publisher 配置。配置后在 Publishing access 里选择 **Require 2FA and disallow tokens**。
-
-新包首次发布（包尚不存在时，这是 OIDC-only 的唯一例外）：
-
-```bash
-cd npm
-npm stage publish --access public
-npm stage list
-# 由维护者 2FA 批准
-npm stage approve <stage-id>
-```
-
-批准后包才存在，再配置 Trusted Publisher。后续发版一律走 workflow 的 OIDC staged publish。
+也可以在 npmjs.com → 包 → Settings → Trusted Publisher 配置。配置后在 Publishing access 里选择 **Require 2FA and disallow tokens**。这些配置步骤由维护者执行。
 
 ## 故障恢复
 
