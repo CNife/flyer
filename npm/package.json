@@ -1,6 +1,6 @@
 {
   "name": "@cnife/flyer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Publish HTML to shareable, expiring, password-protected URLs.",
   "license": "MIT",
   "author": "CNife",
