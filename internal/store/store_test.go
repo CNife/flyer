@@ -160,3 +160,128 @@ func TestKeys(t *testing.T) {
 		t.Fatalf("expected not found, got %v", err)
 	}
 }
+
+func TestListPagesByOwner(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0)
+
+	k1, err := st.CreateKey(ctx, "one", "publisher", "hash-one", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := st.CreateKey(ctx, "two", "publisher", "hash-two", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expired := now.Add(-time.Hour)
+	pages := []Page{
+		{Slug: "aaa111", Title: "old", FileName: "aaa111.html", OwnerKeyID: &k1.ID, Size: 1, CreatedAt: now, ExpiresAt: &expired},
+		{Slug: "bbb222", Title: "tie b", FileName: "bbb222.html", OwnerKeyID: &k1.ID, Size: 2, CreatedAt: now.Add(time.Second)},
+		{Slug: "ccc333", Title: "tie c", FileName: "ccc333.html", OwnerKeyID: &k1.ID, Size: 3, CreatedAt: now.Add(time.Second)},
+		{Slug: "ddd444", Title: "other", FileName: "ddd444.html", OwnerKeyID: &k2.ID, Size: 4, CreatedAt: now.Add(2 * time.Second)},
+		{Slug: "eee555", Title: "admin", FileName: "eee555.html", Size: 5, CreatedAt: now.Add(3 * time.Second)},
+	}
+	for _, p := range pages {
+		if err := st.CreatePage(ctx, p, []byte(p.Title)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, total, err := st.ListPages(ctx, &k1.ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(got) != 3 {
+		t.Fatalf("owner list: total=%d len=%d", total, len(got))
+	}
+	want := []string{"ccc333", "bbb222", "aaa111"}
+	for i, slug := range want {
+		if got[i].Slug != slug {
+			t.Fatalf("owner list[%d] = %q, want %q", i, got[i].Slug, slug)
+		}
+	}
+	if got[2].ExpiresAt == nil || !got[2].ExpiresAt.Equal(expired) {
+		t.Fatalf("expired page missing expires_at: %+v", got[2])
+	}
+	if got[1].ExpiresAt != nil {
+		t.Fatalf("permanent page has expires_at: %+v", got[1])
+	}
+
+	page, total, err := st.ListPages(ctx, &k1.ID, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(page) != 1 || page[0].Slug != "bbb222" {
+		t.Fatalf("paged list: total=%d pages=%+v", total, page)
+	}
+
+	all, total, err := st.ListPages(ctx, nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 || len(all) != 5 || all[0].Slug != "eee555" {
+		t.Fatalf("all list: total=%d pages=%+v", total, all)
+	}
+}
+
+func TestExpirePage(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0)
+	key, err := st.CreateKey(ctx, "owner", "publisher", "hash-owner", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := now.Add(time.Hour)
+	active := Page{
+		Slug: "act123", Title: "active", FileName: "act123.html",
+		OwnerKeyID: &key.ID, Size: 1, CreatedAt: now, ExpiresAt: &expires,
+	}
+	permanent := Page{
+		Slug: "per123", Title: "permanent", FileName: "per123.html",
+		OwnerKeyID: &key.ID, Size: 1, CreatedAt: now,
+	}
+	already := Page{
+		Slug: "old123", Title: "old", FileName: "old123.html",
+		OwnerKeyID: &key.ID, Size: 1, CreatedAt: now, ExpiresAt: &expires,
+	}
+	for _, p := range []Page{active, permanent, already} {
+		if err := st.CreatePage(ctx, p, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := st.ExpirePage(ctx, "act123", now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetPage(ctx, "act123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(now) {
+		t.Fatalf("active page expiry = %v, want %v", got.ExpiresAt, now)
+	}
+	if err := st.ExpirePage(ctx, "act123", now); !errors.Is(err, ErrExpired) {
+		t.Fatalf("second expire: %v, want ErrExpired", err)
+	}
+
+	if err := st.ExpirePage(ctx, "per123", now); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetPage(ctx, "per123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(now) {
+		t.Fatalf("permanent page expiry = %v, want %v", got.ExpiresAt, now)
+	}
+
+	if err := st.ExpirePage(ctx, "old123", now.Add(2*time.Hour)); !errors.Is(err, ErrExpired) {
+		t.Fatalf("expired page expire: %v, want ErrExpired", err)
+	}
+	if err := st.ExpirePage(ctx, "missing", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing page expire: %v, want ErrNotFound", err)
+	}
+}

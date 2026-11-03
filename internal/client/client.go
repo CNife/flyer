@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,26 @@ func (c *Client) Publish(ctx context.Context, req api.PublishRequest) (*api.Publ
 
 func (c *Client) DeletePage(ctx context.Context, slug string) error {
 	return c.do(ctx, http.MethodDelete, "/api/pages/"+url.PathEscape(slug), nil, nil, false)
+}
+
+func (c *Client) ListPages(ctx context.Context, limit, offset int) (*api.PageListResponse, error) {
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit))
+	q.Set("offset", strconv.Itoa(offset))
+	var out api.PageListResponse
+	if err := c.do(ctx, http.MethodGet, "/api/pages?"+q.Encode(), nil, &out, false); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ExpirePage(ctx context.Context, slug string) (*api.ExpirePageResponse, error) {
+	var out api.ExpirePageResponse
+	path := "/api/pages/" + url.PathEscape(slug) + "/expire"
+	if err := c.do(ctx, http.MethodPost, path, nil, &out, false); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) Stats(ctx context.Context) (*api.StatsResponse, error) {

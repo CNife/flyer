@@ -156,13 +156,18 @@ stdout 只输出 URL，方便管道；元信息和二维码写到 stderr。终�
 ### 管理
 
 ```bash
+flyer list                       # 列出当前 key 上传的页面
+flyer list --limit 50 --offset 50
+flyer expire <slug>...           # 让页面立即失效
+flyer delete <slug>...           # 立即删除页面
 flyer admin key create --name agent
 flyer admin key list
 flyer admin key revoke 3
 flyer admin stats
 flyer admin cleanup
-flyer delete <slug>
 ```
+
+`list` 输出表格，`--json` 输出服务端结构。publisher key 只能看到和操作自己的页面；admin key 可以看到并操作所有页面。`expire` 后页面在 24 小时宽限期内返回 `410 Gone`，之后由后台清理删除；需要立即删除时用 `delete`。
 
 ## HTTP API
 
@@ -186,6 +191,24 @@ curl -X POST https://flyer.cnife.cn/api/pages \
 }
 ```
 
+页面管理：
+
+```bash
+# 列出当前 key 的页面（admin key 列出全部）
+curl "https://flyer.cnife.cn/api/pages?limit=100&offset=0" \
+  -H "Authorization: Bearer $FLYER_KEY"
+
+# 让页面立即失效
+curl -X POST "https://flyer.cnife.cn/api/pages/Ab3dE9xZ/expire" \
+  -H "Authorization: Bearer $FLYER_KEY"
+
+# 立即删除
+curl -X DELETE "https://flyer.cnife.cn/api/pages/Ab3dE9xZ" \
+  -H "Authorization: Bearer $FLYER_KEY"
+```
+
+`GET /api/pages` 按 `created_at DESC, slug DESC` 排序，`limit` 默认 100、最大 500，`offset` 默认 0。响应包含 `pages`、`total`、`limit`、`offset`；永久页面的 `expires_at` 省略。
+
 管理端点（需要 admin key）：
 
 - `GET /api/admin/stats`
@@ -193,7 +216,8 @@ curl -X POST https://flyer.cnife.cn/api/pages \
 - `GET /api/admin/keys`
 - `POST /api/admin/keys`
 - `DELETE /api/admin/keys/{id}`
-- `DELETE /api/pages/{slug}`（publisher 只能删自己的页面）
+
+`DELETE /api/pages/{slug}` 和 `POST /api/pages/{slug}/expire` 允许页面所有者或 admin 操作；已过期页面再次 expire 返回 `409`。
 
 ## 行为
 

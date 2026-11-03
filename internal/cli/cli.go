@@ -41,6 +41,10 @@ func Run(args []string) error {
 	switch args[0] {
 	case "publish", "pub":
 		return cmdPublish(args[1:])
+	case "list", "ls":
+		return cmdList(args[1:])
+	case "expire":
+		return cmdExpire(args[1:])
 	case "delete", "rm":
 		return cmdDelete(args[1:])
 	case "admin":
@@ -67,7 +71,9 @@ func printUsage() {
 
 Usage:
   flyer publish [file] [flags]     publish a file (or stdin with -)
-  flyer delete <slug>              delete a page you own
+  flyer list [flags]               list pages you own
+  flyer expire <slug>...           expire pages now
+  flyer delete <slug>...           delete pages you own
   flyer admin key create           create a publisher key
   flyer admin key list             list keys
   flyer admin key revoke <id>      revoke a key
@@ -80,6 +86,12 @@ Usage:
   flyer init-server                generate a server config (server side)
   flyer serve                      run the server
   flyer version
+
+Manage examples:
+  flyer list
+  flyer list --limit 50 --offset 50
+  flyer expire Ab3dE9xZ
+  flyer delete Ab3dE9xZ Xy12abCD
 
 Publish examples:
   flyer publish report.html
@@ -202,7 +214,7 @@ Examples:
 		}
 		req.TTLSeconds = secs
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), resolvePublishKey(*keyFlag, cfg), "")
+	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
 	resp, err := c.Publish(context.Background(), req)
 	if err != nil {
 		return err
@@ -233,12 +245,17 @@ Examples:
 	return nil
 }
 
-func cmdDelete(args []string) error {
-	fs := newFlagSet("delete")
+func cmdList(args []string) error {
+	fs := newFlagSet("list")
 	serverFlag := fs.String("server", "", "server URL")
 	keyFlag := fs.String("key", "", "API key")
+	limit := fs.Int("limit", 100, "maximum pages to return (1-500)")
+	offset := fs.Int("offset", 0, "number of pages to skip")
+	jsonOut := fs.Bool("json", false, "print JSON")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `Usage: flyer delete <slug> [flags]
+		fmt.Fprint(fs.Output(), `Usage: flyer list [flags]
+
+List pages uploaded by the configured API key. The admin key lists every page.
 
 Flags:
 `)
@@ -250,19 +267,155 @@ Flags:
 		}
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: flyer delete <slug>")
+	if *limit < 1 || *limit > 500 {
+		return errors.New("--limit must be between 1 and 500")
+	}
+	if *offset < 0 {
+		return errors.New("--offset must not be negative")
 	}
 	cfg, err := loadClientConfig()
 	if err != nil {
 		return err
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), resolvePublishKey(*keyFlag, cfg), "")
-	if err := c.DeletePage(context.Background(), fs.Arg(0)); err != nil {
+	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
+	list, err := c.ListPages(context.Background(), *limit, *offset)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "deleted %s\n", fs.Arg(0))
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(list)
+	}
+	if len(list.Pages) == 0 {
+		if list.Total == 0 {
+			fmt.Fprintln(os.Stderr, "no pages")
+		} else {
+			fmt.Fprintf(os.Stderr, "no pages at offset %d (total %d)\n", *offset, list.Total)
+		}
+		return nil
+	}
+	now := time.Now()
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SLUG\tTITLE\tSTATE\tEXPIRES\tSIZE")
+	for _, p := range list.Pages {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n",
+			p.Slug, tableCell(p.Title), pageState(p, now), pageExpires(p), p.Size)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	end := *offset + len(list.Pages)
+	if *offset > 0 || int64(end) < list.Total {
+		fmt.Fprintf(os.Stderr, "showing %d-%d of %d", *offset+1, end, list.Total)
+		if int64(end) < list.Total {
+			fmt.Fprintf(os.Stderr, " (use --offset %d for more)", end)
+		}
+		fmt.Fprintln(os.Stderr)
+	}
 	return nil
+}
+
+func pageState(p api.Page, now time.Time) string {
+	if p.ExpiresAt == nil {
+		return "permanent"
+	}
+	if now.Before(*p.ExpiresAt) {
+		return "active"
+	}
+	return "expired"
+}
+
+func pageExpires(p api.Page) string {
+	if p.ExpiresAt == nil {
+		return "never"
+	}
+	return p.ExpiresAt.Local().Format("2006-01-02 15:04")
+}
+
+func tableCell(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) > 40 {
+		return string(runes[:39]) + "…"
+	}
+	return s
+}
+
+func cmdExpire(args []string) error {
+	fs := newFlagSet("expire")
+	serverFlag := fs.String("server", "", "server URL")
+	keyFlag := fs.String("key", "", "API key")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: flyer expire <slug>... [flags]
+
+Expire pages immediately. The admin key can expire any page.
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := parseFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("usage: flyer expire <slug> [<slug> ...]")
+	}
+	cfg, err := loadClientConfig()
+	if err != nil {
+		return err
+	}
+	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
+	var errs []error
+	for _, slug := range fs.Args() {
+		resp, err := c.ExpirePage(context.Background(), slug)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", slug, err))
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "expired %s at %s\n", slug,
+			resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	return errors.Join(errs...)
+}
+
+func cmdDelete(args []string) error {
+	fs := newFlagSet("delete")
+	serverFlag := fs.String("server", "", "server URL")
+	keyFlag := fs.String("key", "", "API key")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: flyer delete <slug>... [flags]
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := parseFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("usage: flyer delete <slug> [<slug> ...]")
+	}
+	cfg, err := loadClientConfig()
+	if err != nil {
+		return err
+	}
+	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
+	var errs []error
+	for _, slug := range fs.Args() {
+		if err := c.DeletePage(context.Background(), slug); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", slug, err))
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "deleted %s\n", slug)
+	}
+	return errors.Join(errs...)
 }
 
 func cmdAdmin(args []string) error {
@@ -632,7 +785,7 @@ func resolveServer(flagValue string, cfg ClientConfig) string {
 	return defaultServer
 }
 
-func resolvePublishKey(flagValue string, cfg ClientConfig) string {
+func resolveAPIKey(flagValue string, cfg ClientConfig) string {
 	if flagValue != "" {
 		return flagValue
 	}
@@ -641,6 +794,9 @@ func resolvePublishKey(flagValue string, cfg ClientConfig) string {
 	}
 	if cfg.Key != "" {
 		return cfg.Key
+	}
+	if v := os.Getenv("FLYER_ADMIN_KEY"); v != "" {
+		return v
 	}
 	return cfg.AdminKey
 }

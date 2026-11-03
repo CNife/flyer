@@ -79,6 +79,8 @@ func (s *Server) routes() {
 		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
 	s.mux.HandleFunc("POST /api/pages", s.handlePublish)
+	s.mux.HandleFunc("GET /api/pages", s.handleListPages)
+	s.mux.HandleFunc("POST /api/pages/{slug}/expire", s.handleExpirePage)
 	s.mux.HandleFunc("DELETE /api/pages/{slug}", s.handleDeletePage)
 	s.mux.HandleFunc("GET /api/admin/stats", s.handleStats)
 	s.mux.HandleFunc("POST /api/admin/cleanup", s.handleCleanup)
@@ -275,6 +277,115 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleListPages(w http.ResponseWriter, r *http.Request) {
+	id, err := s.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
+		return
+	}
+	limit, offset, err := pageListParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var owner *int64
+	if !id.isAdmin {
+		owner = id.keyID
+	}
+	pages, total, err := s.store.ListPages(r.Context(), owner, limit, offset)
+	if err != nil {
+		s.logger.Printf("list pages: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not list pages")
+		return
+	}
+	baseURL := strings.TrimRight(s.cfg.BaseURL, "/")
+	out := make([]api.Page, 0, len(pages))
+	for _, p := range pages {
+		out = append(out, api.Page{
+			Slug:       p.Slug,
+			Title:      p.Title,
+			URL:        baseURL + "/" + p.Slug,
+			Size:       p.Size,
+			Protected:  p.PasswordHash != "",
+			OwnerKeyID: p.OwnerKeyID,
+			CreatedAt:  p.CreatedAt,
+			ExpiresAt:  p.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, api.PageListResponse{
+		Pages: out, Total: total, Limit: limit, Offset: offset,
+	})
+}
+
+func pageListParams(r *http.Request) (int, int, error) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			return 0, 0, errors.New("limit must be an integer between 1 and 500")
+		}
+		limit = n
+	}
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return 0, 0, errors.New("offset must be a non-negative integer")
+		}
+		offset = n
+	}
+	return limit, offset, nil
+}
+
+func (s *Server) handleExpirePage(w http.ResponseWriter, r *http.Request) {
+	id, err := s.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
+		return
+	}
+	slug := r.PathValue("slug")
+	if !auth.ValidSlug(slug) {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	page, err := s.store.GetPage(r.Context(), slug)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read page")
+		return
+	}
+	if !canManage(id, page) {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	now := s.now()
+	if err := s.store.ExpirePage(r.Context(), slug, now); err != nil {
+		switch {
+		case errors.Is(err, store.ErrExpired):
+			writeError(w, http.StatusConflict, "page already expired")
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "page not found")
+		default:
+			s.logger.Printf("expire page %s: %v", slug, err)
+			writeError(w, http.StatusInternalServerError, "could not expire page")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ExpirePageResponse{
+		Expired: true, ExpiresAt: time.Unix(now.Unix(), 0),
+	})
+}
+
+func canManage(id *identity, page *store.Page) bool {
+	if id.isAdmin {
+		return true
+	}
+	return page.OwnerKeyID != nil && id.keyID != nil && *page.OwnerKeyID == *id.keyID
+}
+
 func (s *Server) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	id, err := s.authenticate(r)
 	if err != nil {
@@ -295,11 +406,9 @@ func (s *Server) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read page")
 		return
 	}
-	if !id.isAdmin {
-		if page.OwnerKeyID == nil || id.keyID == nil || *page.OwnerKeyID != *id.keyID {
-			writeError(w, http.StatusNotFound, "page not found")
-			return
-		}
+	if !canManage(id, page) {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
 	}
 	if err := s.store.DeletePage(r.Context(), slug); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -401,7 +510,7 @@ func (s *Server) loadPage(w http.ResponseWriter, r *http.Request, slug string) (
 		return nil, false
 	}
 	now := s.now()
-	if page.ExpiresAt != nil && now.After(*page.ExpiresAt) {
+	if page.ExpiresAt != nil && !now.Before(*page.ExpiresAt) {
 		if now.After(page.ExpiresAt.Add(s.cfg.GracePeriod.Duration)) {
 			http.NotFound(w, r)
 		} else {
