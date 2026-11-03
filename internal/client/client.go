@@ -53,6 +53,25 @@ func (c *Client) DeletePage(ctx context.Context, slug string) error {
 	return c.do(ctx, http.MethodDelete, "/api/pages/"+url.PathEscape(slug), nil, nil, false)
 }
 
+// PageURL returns the public URL of a page.
+func (c *Client) PageURL(slug string) string {
+	return c.BaseURL + "/" + url.PathEscape(slug)
+}
+
+// PageStatus returns the HTTP status of a page without downloading it.
+func (c *Client) PageStatus(ctx context.Context, slug string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.PageURL(slug), nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode, nil
+}
+
 func (c *Client) ListPages(ctx context.Context, limit, offset int) (*api.PageListResponse, error) {
 	q := url.Values{}
 	q.Set("limit", strconv.Itoa(limit))
