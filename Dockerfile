@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 \
       -ldflags "-s -w -X github.com/CNife/flyer/internal/cli.Version=${VERSION}" \
       -o /out/flyer ./cmd/flyer
 
-FROM alpine:3.22
+FROM alpine:3.24
 
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates \
