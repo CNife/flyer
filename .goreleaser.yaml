@@ -1,0 +1,64 @@
+# GoReleaser configuration for flyer.
+# Validate with: goreleaser check
+version: 2
+
+project_name: flyer
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: flyer
+    main: ./cmd/flyer
+    binary: flyer
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/CNife/flyer/internal/cli.Version=v{{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    # tar.gz for humans; the raw binary is what the npm launcher downloads.
+    formats: [tar.gz, binary]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip, binary]
+    files:
+      - LICENSE
+      - README.md
+      - deploy/flyer.service
+      - deploy/Caddyfile
+      - compose.yaml
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  name_template: "v{{ .Version }}"
+  draft: false
+  prerelease: auto

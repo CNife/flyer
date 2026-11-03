@@ -1,0 +1,9 @@
+/dist/
+/flyer
+*.db
+*.db-shm
+*.db-wal
+/pages/
+.env
+/npm/node_modules/
+/npm/*.tgz

@@ -1,0 +1,40 @@
+{
+  "name": "@cnife/flyer",
+  "version": "0.1.0",
+  "description": "Publish HTML to shareable, expiring, password-protected URLs.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CNife/flyer.git"
+  },
+  "homepage": "https://github.com/CNife/flyer",
+  "bugs": {
+    "url": "https://github.com/CNife/flyer/issues"
+  },
+  "bin": {
+    "flyer": "bin/flyer.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "flyer",
+    "html",
+    "share",
+    "publish",
+    "cli",
+    "agent"
+  ]
+}

@@ -1,0 +1,17 @@
+services:
+  flyer:
+    image: ghcr.io/cnife/flyer:latest
+    container_name: flyer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      # Must be the public URL users will open. The first start prints the admin key to the log.
+      FLYER_BASE_URL: ${FLYER_BASE_URL:-http://localhost:8787}
+    volumes:
+      - flyer-data:/data
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  flyer-data:
