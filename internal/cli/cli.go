@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +45,8 @@ func Run(args []string) error {
 		return cmdPublish(args[1:])
 	case "list", "ls":
 		return cmdList(args[1:])
+	case "open":
+		return cmdOpen(args[1:])
 	case "expire":
 		return cmdExpire(args[1:])
 	case "delete", "rm":
@@ -72,6 +76,7 @@ func printUsage() {
 Usage:
   flyer publish [file] [flags]     publish a file (or stdin with -)
   flyer list [flags]               list pages you own
+  flyer open <slug>                open a live page in the browser
   flyer expire <slug>...           expire pages now
   flyer delete <slug>...           delete pages you own
   flyer admin key create           create a publisher key
@@ -90,6 +95,7 @@ Usage:
 Manage examples:
   flyer list
   flyer list --limit 50 --offset 50
+  flyer open Ab3dE9xZ
   flyer expire Ab3dE9xZ
   flyer delete Ab3dE9xZ Xy12abCD
 
@@ -340,6 +346,71 @@ func tableCell(s string) string {
 		return string(runes[:39]) + "…"
 	}
 	return s
+}
+
+func cmdOpen(args []string) error {
+	fs := newFlagSet("open")
+	serverFlag := fs.String("server", "", "server URL")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: flyer open <slug> [flags]
+
+Open a page in the default browser. Expired or missing pages are not opened.
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := parseFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: flyer open <slug>")
+	}
+	cfg, err := loadClientConfig()
+	if err != nil {
+		return err
+	}
+	slug := fs.Arg(0)
+	c := client.New(resolveServer(*serverFlag, cfg), "", "")
+	status, err := c.PageStatus(context.Background(), slug)
+	if err != nil {
+		return err
+	}
+	switch status {
+	case http.StatusOK, http.StatusUnauthorized:
+	case http.StatusGone:
+		return errors.New("page has expired")
+	case http.StatusNotFound:
+		return errors.New("page not found")
+	default:
+		return fmt.Errorf("server returned %d", status)
+	}
+	pageURL := c.PageURL(slug)
+	if err := openBrowser(pageURL); err != nil {
+		return fmt.Errorf("open %s: %w", pageURL, err)
+	}
+	fmt.Fprintf(os.Stderr, "opened %s\n", pageURL)
+	return nil
+}
+
+var openBrowser = func(url string) error {
+	name, args := browserCommand(runtime.GOOS, url)
+	//nolint:gosec // 命令名来自固定的 GOOS 分支，参数是用户自己配置的 server URL
+	return exec.Command(name, args...).Start()
+}
+
+func browserCommand(goos, url string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{url}
+	case "windows":
+		return "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		return "xdg-open", []string{url}
+	}
 }
 
 func cmdExpire(args []string) error {

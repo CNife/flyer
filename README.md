@@ -162,6 +162,7 @@ stdout 只输出 URL，方便管道；元信息和二维码写到 stderr。终�
 ```bash
 flyer list                       # 列出当前 key 上传的页面
 flyer list --limit 50 --offset 50
+flyer open <slug>                # 在默认浏览器中打开仍有效的页面
 flyer expire <slug>...           # 让页面立即失效
 flyer delete <slug>...           # 立即删除页面
 flyer admin key create --name agent
@@ -172,6 +173,8 @@ flyer admin cleanup
 ```
 
 `list` 输出表格，`--json` 输出服务端结构。publisher key 只能看到和操作自己的页面；admin key 可以看到并操作所有页面。`expire` 后页面在 24 小时宽限期内返回 `410 Gone`，之后由后台清理删除；需要立即删除时用 `delete`。
+
+`open` 会先用 HEAD 确认页面仍有效，再用系统默认浏览器打开；已过期或不存在时直接报错，不启动浏览器。密码保护页会打开解锁页。
 
 ## HTTP API
 
