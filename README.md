@@ -216,13 +216,6 @@ curl -X POST https://flyer.cnife.cn/api/pages \
 
 npm 包在 `npm/`，首次运行按平台从 GitHub Releases 下载原始二进制，校验 `checksums.txt` 后缓存。
 
-## 开发
-
-```bash
-go test ./...
-go vet ./...
-```
-
 ## License
 
 MIT。见 [LICENSE](LICENSE)。

@@ -58,8 +58,7 @@ main commit
 4. 本地校验：
 
    ```bash
-   go test ./...
-   go vet ./...
+   just ci
    cd npm
    npm test
    npm pack --dry-run
