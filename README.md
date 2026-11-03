@@ -4,6 +4,23 @@
 
 服务端是单个 Go 二进制，页面存 SQLite + 本地文件。公网入口由 Caddy 终止 TLS 并反代到 `127.0.0.1:8787`。
 
+## 安装
+
+npm（推荐给 agent；首次运行会下载对应平台的二进制并校验 `checksums.txt`）：
+
+```bash
+npx -y @cnife/flyer@latest publish report.html
+npm install -g @cnife/flyer
+```
+
+Go：
+
+```bash
+go install github.com/CNife/flyer/cmd/flyer@latest
+```
+
+也可以直接下载 [GitHub Releases](https://github.com/CNife/flyer/releases) 的二进制或压缩包。当前不提供 Homebrew 和 AUR 包。
+
 ## 构建
 
 ```bash
@@ -47,6 +64,28 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 curl https://flyer.cnife.cn/health
 ```
+
+### Docker
+
+镜像同时提供 `linux/amd64` 和 `linux/arm64`：
+
+```bash
+docker run -d --name flyer \
+  -p 127.0.0.1:8787:8787 \
+  -v flyer-data:/data \
+  -e FLYER_BASE_URL=https://flyer.example.com \
+  ghcr.io/cnife/flyer:latest
+
+docker logs flyer 2>&1 | head    # 首次启动会打印 admin key
+```
+
+或者用仓库里的 `compose.yaml`：
+
+```bash
+FLYER_BASE_URL=https://flyer.example.com docker compose up -d
+```
+
+容器内监听 `0.0.0.0:8787`，默认只绑宿主机的 `127.0.0.1:8787`；前面仍要放 Caddy/Traefik 做 TLS。`/data` 持久化 `config.toml`、SQLite 和页面文件。首次启动会按 `FLYER_BASE_URL` 生成配置；之后修改域名，请编辑卷里的 `config.toml` 并重启。若用 bind mount 而不是 named volume，宿主机目录需要属于 `10001:10001`。
 
 ### 服务端目录
 
@@ -151,9 +190,38 @@ curl -X POST https://flyer.cnife.cn/api/pages \
 - 页面 URL 是根路径 `/<slug>`，不是 `/<slug>.html`。
 - 服务端监听 `127.0.0.1`，不要直接暴露到公网。
 
+## 发布（维护者）
+
+推 `v*` tag 会触发 `.github/workflows/release.yml`：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+流程：`go test`/`go vet` → GoReleaser 生成 GitHub Releases（tar.gz/zip + 原始二进制 + `checksums.txt`）→ 构建并推送 GHCR 镜像 → 发布 npm `@cnife/flyer`。
+
+需要配置的 secret：
+
+- `NPM_TOKEN`：npm 发布 token（首次发布用 token；之后可切到 npm Trusted Publishing）。
+- `GITHUB_TOKEN`：workflow 自带的 token，用于 GitHub Release 和 GHCR。
+
+本地校验：
+
+```bash
+goreleaser check
+goreleaser release --snapshot --clean --skip=publish
+```
+
+npm 包在 `npm/`，首次运行按平台从 GitHub Releases 下载原始二进制，校验 `checksums.txt` 后缓存。
+
 ## 开发
 
 ```bash
 go test ./...
 go vet ./...
 ```
+
+## License
+
+MIT。见 [LICENSE](LICENSE)。
