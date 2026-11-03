@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "description": "Publish HTML to shareable, expiring, password-protected URLs.",
   "license": "MIT",
+  "author": "CNife",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CNife/flyer.git"
+    "url": "git+https://github.com/CNife/flyer.git",
+    "directory": "npm"
   },
   "homepage": "https://github.com/CNife/flyer",
   "bugs": {
@@ -21,7 +23,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
