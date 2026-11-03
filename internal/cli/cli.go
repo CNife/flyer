@@ -212,7 +212,7 @@ Examples:
 		enc.SetIndent("", "  ")
 		return enc.Encode(resp)
 	}
-	fmt.Fprintln(os.Stdout, resp.URL)
+		fmt.Fprintln(os.Stdout, resp.URL)
 	fmt.Fprintf(os.Stderr, "slug: %s\n", resp.Slug)
 	if resp.ExpiresAt == nil {
 		fmt.Fprintln(os.Stderr, "expires: never")
