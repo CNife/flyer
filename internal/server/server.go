@@ -20,6 +20,7 @@ import (
 	"github.com/CNife/flyer/internal/api"
 	"github.com/CNife/flyer/internal/auth"
 	"github.com/CNife/flyer/internal/config"
+	"github.com/CNife/flyer/internal/publish"
 	"github.com/CNife/flyer/internal/store"
 )
 
@@ -41,6 +42,7 @@ func (i *identity) rateKey() string {
 type Server struct {
 	cfg             config.Config
 	store           *store.Store
+	publisher       *publish.Publisher
 	signer          *auth.Signer
 	logger          *log.Logger
 	mux             *http.ServeMux
@@ -54,9 +56,14 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
+	publisher := publish.New(publish.Config{
+		DefaultTTL: cfg.DefaultTTL.Duration,
+		MaxTTL:     cfg.MaxTTL.Duration,
+	}, st)
 	s := &Server{
 		cfg:             cfg,
 		store:           st,
+		publisher:       publisher,
 		signer:          auth.NewSigner(cfg.SessionSecret),
 		logger:          logger,
 		mux:             http.NewServeMux(),
@@ -204,77 +211,52 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "page is too large")
 		return
 	}
-	if req.TTLSeconds < 0 {
-		writeError(w, http.StatusBadRequest, "ttl_seconds must not be negative")
-		return
-	}
 
-	var expires *time.Time
-	if !req.Permanent {
-		ttl := s.cfg.DefaultTTL.Duration
-		if req.TTLSeconds > 0 {
-			ttl = time.Duration(req.TTLSeconds) * time.Second
-		}
-		if ttl > s.cfg.MaxTTL.Duration {
-			writeError(w, http.StatusBadRequest, "ttl exceeds server maximum")
-			return
-		}
-		e := now.Add(ttl)
-		expires = &e
-	}
-
-	var passwordHash string
-	if req.Password != "" {
-		passwordHash, err = auth.HashPassword(req.Password)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-
-	var slug string
-	for range 8 {
-		candidate, err := auth.NewSlug()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not generate slug")
-			return
-		}
-		title := strings.TrimSpace(req.Title)
-		if title == "" {
-			title = candidate
-		}
-		err = s.store.CreatePage(r.Context(), store.Page{
-			Slug:         candidate,
-			Title:        title,
-			FileName:     candidate + ".html",
-			PasswordHash: passwordHash,
-			OwnerKeyID:   id.keyID,
-			Size:         int64(len(req.HTML)),
-			CreatedAt:    now,
-			ExpiresAt:    expires,
-		}, []byte(req.HTML))
-		if errors.Is(err, store.ErrSlugExists) {
-			continue
-		}
-		if err != nil {
+	res, err := s.publisher.Publish(r.Context(), publish.Request{
+		HTML:       req.HTML,
+		Title:      req.Title,
+		Password:   req.Password,
+		TTLSeconds: req.TTLSeconds,
+		Permanent:  req.Permanent,
+		OwnerKeyID: id.keyID,
+		Now:        now,
+	})
+	if err != nil {
+		status, msg := publishHTTPError(err)
+		if status >= http.StatusInternalServerError {
 			s.logger.Printf("create page: %v", err)
-			writeError(w, http.StatusInternalServerError, "could not store page")
-			return
 		}
-		slug = candidate
-		break
-	}
-	if slug == "" {
-		writeError(w, http.StatusInternalServerError, "could not allocate a slug")
+		writeError(w, status, msg)
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, api.PublishResponse{
-		Slug:      slug,
-		URL:       strings.TrimRight(s.cfg.BaseURL, "/") + "/" + slug,
-		ExpiresAt: expires,
-		Protected: passwordHash != "",
+		Slug:      res.Slug,
+		URL:       strings.TrimRight(s.cfg.BaseURL, "/") + "/" + res.Slug,
+		ExpiresAt: res.ExpiresAt,
+		Protected: res.Protected,
 	})
+}
+
+// publishHTTPError maps the publish module's error modes onto HTTP. The module
+// does not know about HTTP; the adapter owns status codes and messages.
+func publishHTTPError(err error) (int, string) {
+	switch {
+	case errors.Is(err, publish.ErrInvalidTTL):
+		return http.StatusBadRequest, publish.ErrInvalidTTL.Error()
+	case errors.Is(err, publish.ErrTTLTooLarge):
+		return http.StatusBadRequest, publish.ErrTTLTooLarge.Error()
+	case errors.Is(err, publish.ErrPassword):
+		return http.StatusBadRequest, publish.ErrPassword.Error()
+	case errors.Is(err, publish.ErrSlug):
+		return http.StatusInternalServerError, publish.ErrSlug.Error()
+	case errors.Is(err, publish.ErrSlugExhausted):
+		return http.StatusInternalServerError, publish.ErrSlugExhausted.Error()
+	case errors.Is(err, publish.ErrStore):
+		return http.StatusInternalServerError, publish.ErrStore.Error()
+	default:
+		return http.StatusInternalServerError, publish.ErrStore.Error()
+	}
 }
 
 func (s *Server) handleListPages(w http.ResponseWriter, r *http.Request) {

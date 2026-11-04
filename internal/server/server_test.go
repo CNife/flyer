@@ -81,7 +81,7 @@ func decode[T any](t *testing.T, resp *http.Response) T {
 	return v
 }
 
-func publish(t *testing.T, ts *httptest.Server, token string, req api.PublishRequest) api.PublishResponse {
+func publishPage(t *testing.T, ts *httptest.Server, token string, req api.PublishRequest) api.PublishResponse {
 	t.Helper()
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", token, req)
 	if resp.StatusCode != http.StatusCreated {
@@ -93,7 +93,7 @@ func publish(t *testing.T, ts *httptest.Server, token string, req api.PublishReq
 
 func TestPublishAndServe(t *testing.T) {
 	_, cfg, ts := newTestServer(t, nil)
-	page := publish(t, ts, cfg.AdminKey, api.PublishRequest{
+	page := publishPage(t, ts, cfg.AdminKey, api.PublishRequest{
 		HTML:  "<h1>hello</h1>",
 		Title: "Hello",
 	})
@@ -152,7 +152,7 @@ func TestPublishRequiresKey(t *testing.T) {
 
 func TestPasswordPage(t *testing.T) {
 	_, cfg, ts := newTestServer(t, nil)
-	page := publish(t, ts, cfg.AdminKey, api.PublishRequest{
+	page := publishPage(t, ts, cfg.AdminKey, api.PublishRequest{
 		HTML:     "<h1>secret</h1>",
 		Title:    "Protected",
 		Password: "hunter2",
@@ -214,7 +214,7 @@ func TestExpiredPage(t *testing.T) {
 	srv, cfg, ts := newTestServer(t, nil)
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	srv.now = func() time.Time { return base }
-	page := publish(t, ts, cfg.AdminKey, api.PublishRequest{
+	page := publishPage(t, ts, cfg.AdminKey, api.PublishRequest{
 		HTML:       "expired",
 		TTLSeconds: 1,
 	})
@@ -257,7 +257,7 @@ func TestRateLimit(t *testing.T) {
 		c.RateLimitPerHour = 3
 	})
 	for range 3 {
-		publish(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "ok"})
+		publishPage(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "ok"})
 	}
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: "ok"})
 	if resp.StatusCode != http.StatusTooManyRequests {
@@ -285,7 +285,7 @@ func TestKeysAndOwnership(t *testing.T) {
 		t.Fatalf("unexpected key: %+v", k1)
 	}
 
-	page := publish(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
+	page := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
 	resp := doJSON(t, http.MethodDelete, ts.URL+"/api/pages/"+page.Slug, k2.Key, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("other key delete status = %d", resp.StatusCode)
@@ -295,7 +295,7 @@ func TestKeysAndOwnership(t *testing.T) {
 		t.Fatalf("owner delete status = %d", resp.StatusCode)
 	}
 
-	page2 := publish(t, ts, k1.Key, api.PublishRequest{HTML: "second"})
+	page2 := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "second"})
 	resp = doJSON(t, http.MethodGet, ts.URL+"/api/admin/stats", k1.Key, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("publisher stats status = %d", resp.StatusCode)
@@ -322,7 +322,7 @@ func TestKeysAndOwnership(t *testing.T) {
 
 func TestPermanentPage(t *testing.T) {
 	srv, cfg, ts := newTestServer(t, nil)
-	page := publish(t, ts, cfg.AdminKey, api.PublishRequest{
+	page := publishPage(t, ts, cfg.AdminKey, api.PublishRequest{
 		HTML:      "forever",
 		Permanent: true,
 	})
@@ -373,16 +373,16 @@ func TestListPages(t *testing.T) {
 	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	srv.now = func() time.Time { return base }
-	first := publish(t, ts, k1.Key, api.PublishRequest{HTML: "first", Title: "First"})
+	first := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "first", Title: "First"})
 
 	srv.now = func() time.Time { return base.Add(time.Second) }
-	second := publish(t, ts, k1.Key, api.PublishRequest{HTML: "second", Title: "Second", Permanent: true})
+	second := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "second", Title: "Second", Permanent: true})
 
 	srv.now = func() time.Time { return base.Add(2 * time.Second) }
-	publish(t, ts, k2.Key, api.PublishRequest{HTML: "other"})
+	publishPage(t, ts, k2.Key, api.PublishRequest{HTML: "other"})
 
 	srv.now = func() time.Time { return base.Add(3 * time.Second) }
-	adminPage := publish(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "admin"})
+	adminPage := publishPage(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "admin"})
 
 	resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages", k1.Key, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -440,7 +440,7 @@ func TestExpirePage(t *testing.T) {
 	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	srv.now = func() time.Time { return base }
-	page := publish(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
+	page := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
 
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k2.Key, nil)
 	if resp.StatusCode != http.StatusNotFound {
@@ -475,7 +475,7 @@ func TestExpirePage(t *testing.T) {
 		t.Fatalf("second expire status=%d", resp.StatusCode)
 	}
 
-	permanent := publish(t, ts, k1.Key, api.PublishRequest{HTML: "forever", Permanent: true})
+	permanent := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "forever", Permanent: true})
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+permanent.Slug+"/expire", k1.Key, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("permanent expire status=%d", resp.StatusCode)
@@ -489,7 +489,7 @@ func TestExpirePage(t *testing.T) {
 		t.Fatalf("expired permanent page status=%d", gone.StatusCode)
 	}
 
-	adminExpire := publish(t, ts, k1.Key, api.PublishRequest{HTML: "admin can expire"})
+	adminExpire := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "admin can expire"})
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+adminExpire.Slug+"/expire", cfg.AdminKey, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin expire status=%d", resp.StatusCode)
