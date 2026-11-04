@@ -44,6 +44,15 @@ just ci      # 全量门禁：check + golangci-lint + govulncheck + actionlint
 just --list  # 全部任务
 ```
 
+推送前走 no-mistakes 门禁（每个 clone 先 `no-mistakes init`）：
+
+```bash
+git push no-mistakes <branch>   # review / test / lint 通过后自动推送并开 PR
+no-mistakes axi                 # 查看当前分支的 run 状态
+```
+
+门禁命令和审查策略在 `.no-mistakes.yaml`，与 `just` 的 recipe 一致。
+
 ## 服务端部署
 
 ```bash

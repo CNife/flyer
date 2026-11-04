@@ -4,6 +4,8 @@
 
 提交前跑 `just check`；`justfile` 是本地与 CI 共用的任务入口，CI 见 `.github/workflows/ci.yml`。
 
+推送验证走 no-mistakes 门禁：每个 clone 先 `no-mistakes init`，再用 `git push no-mistakes <branch>` 或 `/no-mistakes` 验证已提交的分支。门禁命令和审查策略在 `.no-mistakes.yaml`，保持与 `justfile` 一致，不要另建检查入口。
+
 ## Agent skills
 
 ### Issue tracker

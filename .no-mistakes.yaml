@@ -1,0 +1,48 @@
+# no-mistakes 门禁配置：`git push no-mistakes <branch>` 或 `/no-mistakes` 时，
+# 依次执行 intent / rebase / review / test / document / lint / push / pr / ci。
+# commands、document、review、test 策略从默认分支的这份文件读取，改动合并到 main 后才对后续 run 生效。
+# 字段参考：https://kunchenguid.github.io/no-mistakes/reference/repo-config/
+
+commands:
+  prepare: "go mod download"
+  # 单元测试不到 1 秒，直接跑全量作为 targeted baseline。
+  test: "just test"
+  lint: "just lint"
+  format: "just fmt"
+
+test:
+  instructions: |
+    构建：`just build` 产出 dist/flyer。
+    CLI 场景直接运行 dist/flyer 子命令；服务端场景使用临时目录：
+    `dist/flyer init-server --dir <tmp> --base-url http://127.0.0.1:<port> --listen 127.0.0.1:<port>`，
+    它把 admin key 打印到 stdout；所有 /api/ 接口都要带 `Authorization: Bearer <key>`，否则返回 401。
+    再运行 `dist/flyer serve --dir <tmp>`，用 curl 验证 /health、发布和访问页面；/health 与页面 URL 不需要鉴权。
+    结束后停掉进程。
+    只用临时目录和这次生成的临时 key，不要写入仓库，不要复用生产 key，也不要访问生产地址。
+
+document:
+  instructions: |
+    README.md 面向使用者，负责安装、构建、开发与部署说明；RELEASING.md 是发版不变量和流程的唯一权威；
+    AGENTS.md 与 docs/agents/ 面向 agent，记录仓库约定；GLOSSARY.md 与 docs/adr/ 记录领域词汇和架构决策。
+    同一事实只保留一个权威位置，其他位置用链接指向。文档和提交信息使用中文。
+
+review:
+  path_instructions:
+    - path: "RELEASING.md"
+      instructions: |
+        发版不变量：仓库必须保持 public；已发布 tag 不移动、不删除；npm 只用 OIDC staged publishing，
+        禁止 NPM_TOKEN 和直接 npm publish；改发布路径的 PR 必须 bump npm/package.json，或带 skip-version 标签。
+        agent 不得 push tag、发布 npm，或代做 2FA 批准。
+    - path: "scripts/release-policy.sh"
+      instructions: |
+        发布策略与 RELEASING.md 一致：允许列表只包含不随二进制/npm/镜像发布的工具与文档路径，
+        新增路径必须确认不会进入发布产物。
+    - path: "npm/**"
+      instructions: |
+        npm 包只是 launcher，匿名下载 GitHub Release 资产并校验 checksums.txt；不要引入发布 token 或要求登录。
+    - path: "docs/**"
+      instructions: |
+        中文说明文档，不要求测试覆盖。
+    - path: "*.md"
+      instructions: |
+        中文说明文档，不要求测试覆盖。
