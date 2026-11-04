@@ -20,6 +20,11 @@ test:
     结束后停掉进程。
     只用临时目录和这次生成的临时 key，不要写入仓库，不要复用生产 key，也不要访问生产地址。
 
+ci:
+  # CI 全绿即结束 run，不再监控到 PR merge/close；合并决策留给维护者。
+  # 代价：绿后分支落后或冲突不会自动 rebase，需要时重新跑一次 run。
+  release_after_checks_pass: true
+
 document:
   instructions: |
     README.md 面向使用者，负责安装、构建、开发与部署说明；RELEASING.md 是发版不变量和流程的唯一权威；
