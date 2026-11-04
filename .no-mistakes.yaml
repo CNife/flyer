@@ -15,7 +15,9 @@ test:
     构建：`just build` 产出 dist/flyer。
     CLI 场景直接运行 dist/flyer 子命令；服务端场景使用临时目录：
     `dist/flyer init-server --dir <tmp> --base-url http://127.0.0.1:<port> --listen 127.0.0.1:<port>`，
-    再运行 `dist/flyer serve --dir <tmp>`，用 curl 验证 /health、发布和访问页面，结束后停掉进程。
+    它把 admin key 打印到 stdout，发布接口要用这只 key 作 `Authorization: Bearer <key>`，否则返回 401。
+    再运行 `dist/flyer serve --dir <tmp>`，用 curl 验证 /health、发布和访问页面；/health 与页面 URL 不需要鉴权。
+    结束后停掉进程。
     运行数据只写到临时目录，不要污染仓库，也不要访问生产地址。
 
 document:
