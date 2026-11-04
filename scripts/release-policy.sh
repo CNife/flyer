@@ -125,7 +125,7 @@ shipped=()
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   case "$file" in
-    .github/* | docs/* | scripts/* | *.md | LICENSE | .gitignore | .gitattributes | .githooks/* | justfile | .goreleaser.yaml)
+    .github/* | docs/* | scripts/* | *.md | LICENSE | .gitignore | .gitattributes | .githooks/* | justfile | .goreleaser.yaml | .no-mistakes.yaml)
       ;;
     *)
       shipped+=("$file")
