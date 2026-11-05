@@ -899,6 +899,9 @@ func parseTTL(value string) (int64, error) {
 	if d < 0 {
 		return 0, errors.New("ttl must not be negative")
 	}
+	if d%time.Second != 0 {
+		return 0, errors.New("ttl must be a whole number of seconds")
+	}
 	return int64(d.Seconds()), nil
 }
 

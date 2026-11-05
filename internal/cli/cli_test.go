@@ -23,7 +23,12 @@ func TestParseTTL(t *testing.T) {
 		{"0s", 0, false},
 		{"-1", 0, true},
 		{"-1h", 0, true},
+		{"-500ms", 0, true},
+		{"500ms", 0, true},
+		{"1500ms", 0, true},
 		{"nope", 0, true},
+		{"2s", 2, false},
+		{"1m30s", 90, false},
 	}
 	for _, c := range cases {
 		got, err := parseTTL(c.in)
