@@ -19,8 +19,10 @@ func TestParseTTL(t *testing.T) {
 		{"1h", 3600, false},
 		{"24h", 86400, false},
 		{"90", 90, false},
-		{"0", 0, true},
+		{"0", 0, false},
+		{"0s", 0, false},
 		{"-1", 0, true},
+		{"-1h", 0, true},
 		{"nope", 0, true},
 	}
 	for _, c := range cases {

@@ -57,8 +57,9 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) *Server {
 		logger = log.Default()
 	}
 	publisher := publish.New(publish.Config{
-		DefaultTTL: cfg.DefaultTTL.Duration,
-		MaxTTL:     cfg.MaxTTL.Duration,
+		DefaultTTL:   cfg.DefaultTTL.Duration,
+		MaxTTL:       cfg.MaxTTL.Duration,
+		MaxHTMLBytes: cfg.MaxUploadBytes,
 	}, st)
 	s := &Server{
 		cfg:             cfg,
@@ -197,18 +198,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "page is too large")
+			writeError(w, http.StatusRequestEntityTooLarge, publish.ErrTooLarge.Error())
 			return
 		}
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	if strings.TrimSpace(req.HTML) == "" {
-		writeError(w, http.StatusBadRequest, "html must not be empty")
-		return
-	}
-	if int64(len(req.HTML)) > s.cfg.MaxUploadBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "page is too large")
 		return
 	}
 
@@ -242,6 +235,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // does not know about HTTP; the adapter owns status codes and messages.
 func publishHTTPError(err error) (int, string) {
 	switch {
+	case errors.Is(err, publish.ErrEmptyHTML):
+		return http.StatusBadRequest, publish.ErrEmptyHTML.Error()
+	case errors.Is(err, publish.ErrTooLarge):
+		return http.StatusRequestEntityTooLarge, publish.ErrTooLarge.Error()
 	case errors.Is(err, publish.ErrInvalidTTL):
 		return http.StatusBadRequest, publish.ErrInvalidTTL.Error()
 	case errors.Is(err, publish.ErrTTLTooLarge):
