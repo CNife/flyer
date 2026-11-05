@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"flag"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -117,5 +122,163 @@ func TestResolveAPIKeyPrefersConfigPublisherOverAdminEnv(t *testing.T) {
 	t.Setenv("FLYER_ADMIN_KEY", "admin-env")
 	if got := resolveAPIKey("", ClientConfig{Key: "publisher-config"}); got != "publisher-config" {
 		t.Fatalf("resolveAPIKey = %q, want publisher-config", got)
+	}
+}
+
+// fakeAPI is the in-process adapter behind the command's client seam.
+type fakeAPI struct {
+	published *api.PublishRequest
+	publish   *api.PublishResponse
+	pages     *api.PageListResponse
+	status    int
+	expire    *api.ExpirePageResponse
+	deleted   []string
+	keys      []api.Key
+	created   *api.CreateKeyResponse
+	stats     *api.StatsResponse
+	cleanup   *api.CleanupResponse
+}
+
+func (f *fakeAPI) Publish(_ context.Context, req api.PublishRequest) (*api.PublishResponse, error) {
+	f.published = &req
+	return f.publish, nil
+}
+
+func (f *fakeAPI) ListPages(context.Context, int, int) (*api.PageListResponse, error) {
+	return f.pages, nil
+}
+
+func (f *fakeAPI) PageStatus(context.Context, string) (int, error) { return f.status, nil }
+
+func (f *fakeAPI) ExpirePage(context.Context, string) (*api.ExpirePageResponse, error) {
+	return f.expire, nil
+}
+
+func (f *fakeAPI) DeletePage(_ context.Context, slug string) error {
+	f.deleted = append(f.deleted, slug)
+	return nil
+}
+
+func (f *fakeAPI) CreateKey(context.Context, string, string) (*api.CreateKeyResponse, error) {
+	return f.created, nil
+}
+
+func (f *fakeAPI) ListKeys(context.Context) ([]api.Key, error) { return f.keys, nil }
+
+func (f *fakeAPI) RevokeKey(context.Context, int64) error { return nil }
+
+func (f *fakeAPI) Stats(context.Context) (*api.StatsResponse, error) { return f.stats, nil }
+
+func (f *fakeAPI) Cleanup(context.Context) (*api.CleanupResponse, error) { return f.cleanup, nil }
+
+func (f *fakeAPI) PageURL(slug string) string { return "https://flyer.example/" + slug }
+
+func newTestCommand(fake apiClient) (*command, *bytes.Buffer, *bytes.Buffer) {
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	return &command{
+		cfgLoaded: true,
+		out:       out,
+		errOut:    errOut,
+		newClient: func(string, string, string) apiClient { return fake },
+	}, out, errOut
+}
+
+func TestListJSONAndTextShareOneModel(t *testing.T) {
+	expires := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	fake := &fakeAPI{pages: &api.PageListResponse{
+		Pages: []api.Page{{Slug: "Ab3dE9xZ", Title: "Report", Size: 42, ExpiresAt: &expires}},
+		Total: 1,
+	}}
+	c, out, errOut := newTestCommand(fake)
+
+	if err := cmdList(c, []string{"--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var got api.PageListResponse
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+	if len(got.Pages) != 1 || got.Pages[0].Slug != "Ab3dE9xZ" || got.Pages[0].Size != 42 {
+		t.Fatalf("unexpected JSON pages: %+v", got.Pages)
+	}
+	if got.Pages[0].ExpiresAt == nil || !got.Pages[0].ExpiresAt.Equal(expires) {
+		t.Fatalf("expires = %v, want %v", got.Pages[0].ExpiresAt, expires)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("JSON wrote metadata to stderr: %q", errOut)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if err := cmdList(c, nil); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"SLUG", "Ab3dE9xZ", "Report"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("text output missing %q: %q", want, text)
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("text wrote metadata for a single page: %q", errOut)
+	}
+}
+
+func TestPublishSplitsURLAndMetadata(t *testing.T) {
+	expires := time.Now().Add(time.Hour)
+	fake := &fakeAPI{publish: &api.PublishResponse{
+		Slug: "Ab3dE9xZ", URL: "https://flyer.example/Ab3dE9xZ", ExpiresAt: &expires, Protected: true,
+	}}
+	c, out, errOut := newTestCommand(fake)
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := os.WriteFile(path, []byte("<h1>hi</h1>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmdPublish(c, []string{path}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "https://flyer.example/Ab3dE9xZ\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	for _, want := range []string{"slug: Ab3dE9xZ", "protected: yes"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Fatalf("stderr missing %q: %q", want, errOut)
+		}
+	}
+	if fake.published == nil || fake.published.Title != "report" || fake.published.HTML != "<h1>hi</h1>" {
+		t.Fatalf("publish intent not passed: %+v", fake.published)
+	}
+}
+
+func TestCommandsAssembleClientOnce(t *testing.T) {
+	fake := &fakeAPI{
+		pages:   &api.PageListResponse{},
+		stats:   &api.StatsResponse{},
+		cleanup: &api.CleanupResponse{},
+	}
+	cases := []struct {
+		name string
+		run  func(*command) error
+	}{
+		{"list", func(c *command) error { return cmdList(c, []string{"--json"}) }},
+		{"stats", func(c *command) error { return cmdAdminStats(c, []string{"--json"}) }},
+		{"cleanup", func(c *command) error { return cmdAdminCleanup(c, []string{"--json"}) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			c, _, _ := newTestCommand(fake)
+			c.newClient = func(string, string, string) apiClient {
+				calls++
+				return fake
+			}
+			if err := tc.run(c); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("client assembled %d times, want 1", calls)
+			}
+		})
 	}
 }
