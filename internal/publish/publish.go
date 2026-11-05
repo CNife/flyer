@@ -18,6 +18,8 @@ import (
 // status codes; their text is the user-visible message and is kept identical
 // to the pre-deepening handler's responses.
 var (
+	ErrEmptyHTML     = errors.New("html must not be empty")
+	ErrTooLarge      = errors.New("page is too large")
 	ErrInvalidTTL    = errors.New("ttl_seconds must not be negative")
 	ErrTTLTooLarge   = errors.New("ttl exceeds server maximum")
 	ErrPassword      = errors.New("password is too long")
@@ -38,6 +40,9 @@ type Pages interface {
 type Config struct {
 	DefaultTTL time.Duration
 	MaxTTL     time.Duration
+	// MaxHTMLBytes is the maximum accepted HTML size in bytes. It must be
+	// positive; a zero value rejects every non-empty Page.
+	MaxHTMLBytes int64
 }
 
 // Publisher publishes Pages.
@@ -53,8 +58,8 @@ func New(cfg Config, pages Pages) *Publisher {
 	return &Publisher{cfg: cfg, pages: pages, newSlug: auth.NewSlug}
 }
 
-// Request is one Page to publish. HTML must be non-empty and already checked
-// against the upload limit; the HTTP adapter guarantees both invariants.
+// Request is one Page to publish. Publish validates HTML against Config; the
+// caller only transports it.
 type Request struct {
 	HTML       string
 	Title      string
@@ -76,6 +81,12 @@ type Result struct {
 // password hashing, title defaulting and slug allocation all live here and are
 // invisible to callers.
 func (p *Publisher) Publish(ctx context.Context, req Request) (Result, error) {
+	if strings.TrimSpace(req.HTML) == "" {
+		return Result{}, ErrEmptyHTML
+	}
+	if int64(len(req.HTML)) > p.cfg.MaxHTMLBytes {
+		return Result{}, ErrTooLarge
+	}
 	if req.TTLSeconds < 0 {
 		return Result{}, ErrInvalidTTL
 	}

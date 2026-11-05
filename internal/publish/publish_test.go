@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	defaultTTL = time.Hour
-	maxTTL     = 24 * time.Hour
+	defaultTTL   = time.Hour
+	maxTTL       = 24 * time.Hour
+	maxHTMLBytes = 1024
 )
 
 var fixedNow = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -39,7 +40,7 @@ func (f *fakePages) CreatePage(_ context.Context, p store.Page, html []byte) err
 
 func testPublisher(t *testing.T, pages Pages) *Publisher {
 	t.Helper()
-	p := New(Config{DefaultTTL: defaultTTL, MaxTTL: maxTTL}, pages)
+	p := New(Config{DefaultTTL: defaultTTL, MaxTTL: maxTTL, MaxHTMLBytes: maxHTMLBytes}, pages)
 	p.newSlug = func() (string, error) { return "abcd1234", nil }
 	return p
 }
@@ -60,7 +61,7 @@ func TestTTLAndPermanentRules(t *testing.T) {
 		wantErr error
 		wantExp *time.Time
 	}{
-		{name: "default ttl", wantExp: at(defaultTTL)},
+		{name: "zero or omitted ttl uses default", wantExp: at(defaultTTL)},
 		{name: "explicit ttl", mutate: func(r *Request) { r.TTLSeconds = 7200 }, wantExp: at(2 * time.Hour)},
 		{name: "ttl at maximum", mutate: func(r *Request) {
 			r.TTLSeconds = int64(maxTTL / time.Second)
@@ -114,6 +115,42 @@ func TestTTLAndPermanentRules(t *testing.T) {
 			}
 			if call.page.ExpiresAt == nil || !call.page.ExpiresAt.Equal(*got.ExpiresAt) {
 				t.Fatalf("persisted expiry = %v, want %v", call.page.ExpiresAt, got.ExpiresAt)
+			}
+		})
+	}
+}
+
+func TestHTMLRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		html    string
+		wantErr error
+	}{
+		{name: "empty html", html: "", wantErr: ErrEmptyHTML},
+		{name: "blank html", html: " \n\t ", wantErr: ErrEmptyHTML},
+		{name: "html at limit", html: strings.Repeat("a", maxHTMLBytes)},
+		{name: "html over limit", html: strings.Repeat("a", maxHTMLBytes+1), wantErr: ErrTooLarge},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pages := &fakePages{}
+			req := baseRequest()
+			req.HTML = tc.html
+			_, err := testPublisher(t, pages).Publish(context.Background(), req)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				if len(pages.calls) != 0 {
+					t.Fatalf("persisted %d pages on invalid html", len(pages.calls))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(pages.calls) != 1 || pages.calls[0].html != tc.html {
+				t.Fatalf("persisted html = %q", pages.calls[0].html)
 			}
 		})
 	}

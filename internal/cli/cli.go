@@ -209,6 +209,9 @@ Examples:
 	if req.Password == "" {
 		req.Password = os.Getenv("FLYER_PASSWORD")
 	}
+	// Adapter enrichment, not a publish rule: when the user did not pass
+	// --title, infer one from the local file name. The server defaults a blank
+	// title to the slug.
 	if req.Title == "" && name != "stdin" && name != "-" {
 		base := filepath.Base(name)
 		req.Title = strings.TrimSuffix(base, filepath.Ext(base))
@@ -884,8 +887,8 @@ func resolveAdminKey(flagValue string, cfg ClientConfig) string {
 
 func parseTTL(value string) (int64, error) {
 	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if secs <= 0 {
-			return 0, errors.New("ttl must be positive")
+		if secs < 0 {
+			return 0, errors.New("ttl must not be negative")
 		}
 		return secs, nil
 	}
@@ -893,8 +896,11 @@ func parseTTL(value string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid ttl %q", value)
 	}
-	if d <= 0 {
-		return 0, errors.New("ttl must be positive")
+	if d < 0 {
+		return 0, errors.New("ttl must not be negative")
+	}
+	if d%time.Second != 0 {
+		return 0, errors.New("ttl must be a whole number of seconds")
 	}
 	return int64(d.Seconds()), nil
 }

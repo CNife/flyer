@@ -244,12 +244,22 @@ func TestUploadLimit(t *testing.T) {
 	_, cfg, ts := newTestServer(t, func(c *config.Config) {
 		c.MaxUploadBytes = 1024
 	})
-	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{
-		HTML: strings.Repeat("a", 2048),
+	t.Run("module limit maps to 413", func(t *testing.T) {
+		resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{
+			HTML: strings.Repeat("a", 2048),
+		})
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
 	})
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	t.Run("body guard rejects oversized payloads", func(t *testing.T) {
+		resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{
+			HTML: strings.Repeat("a", 1<<20),
+		})
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	})
 }
 
 func TestRateLimit(t *testing.T) {
@@ -342,13 +352,23 @@ func TestPermanentPage(t *testing.T) {
 
 func TestMalformedPublish(t *testing.T) {
 	_, cfg, ts := newTestServer(t, nil)
-	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: ""}); resp.StatusCode != http.StatusBadRequest {
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: ""})
+	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty html status = %d", resp.StatusCode)
 	}
-	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: "x", TTLSeconds: -1}); resp.StatusCode != http.StatusBadRequest {
+	if got := decode[api.ErrorResponse](t, resp).Error; got != "html must not be empty" {
+		t.Fatalf("error = %q", got)
+	}
+
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: "x", TTLSeconds: -1})
+	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("negative ttl status = %d", resp.StatusCode)
 	}
-	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: "x", TTLSeconds: int64((48 * time.Hour).Seconds())}); resp.StatusCode != http.StatusBadRequest {
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{
+		HTML:       "x",
+		TTLSeconds: int64(cfg.MaxTTL.Duration/time.Second) + 1,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("over max ttl status = %d", resp.StatusCode)
 	}
 }
