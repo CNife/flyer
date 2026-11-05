@@ -359,6 +359,18 @@ func TestMalformedPublish(t *testing.T) {
 	if got := decode[api.ErrorResponse](t, resp).Error; got != "html must not be empty" {
 		t.Fatalf("error = %q", got)
 	}
+
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{HTML: "x", TTLSeconds: -1})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("negative ttl status = %d", resp.StatusCode)
+	}
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages", cfg.AdminKey, api.PublishRequest{
+		HTML:       "x",
+		TTLSeconds: int64(cfg.MaxTTL.Duration/time.Second) + 1,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("over max ttl status = %d", resp.StatusCode)
+	}
 }
 
 func itoa(v int64) string {
