@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/CNife/flyer/internal/api"
 	"github.com/CNife/flyer/internal/config"
+	"github.com/CNife/flyer/internal/pages"
 	"github.com/CNife/flyer/internal/store"
 )
 
@@ -278,39 +280,20 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-func TestKeysAndOwnership(t *testing.T) {
+func TestKeys(t *testing.T) {
 	_, cfg, ts := newTestServer(t, nil)
-	create := func(name string) api.CreateKeyResponse {
-		t.Helper()
-		resp := doJSON(t, http.MethodPost, ts.URL+"/api/admin/keys", cfg.AdminKey, api.CreateKeyRequest{Name: name})
-		if resp.StatusCode != http.StatusCreated {
-			data, _ := io.ReadAll(resp.Body)
-			t.Fatalf("create key: status=%d body=%s", resp.StatusCode, data)
-		}
-		return decode[api.CreateKeyResponse](t, resp)
-	}
-	k1 := create("one")
-	k2 := create("two")
+	k1 := createPublisherKey(t, ts, cfg.AdminKey, "one")
+	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
 	if k1.Key == "" || k1.Role != "publisher" {
 		t.Fatalf("unexpected key: %+v", k1)
 	}
 
-	page := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
-	resp := doJSON(t, http.MethodDelete, ts.URL+"/api/pages/"+page.Slug, k2.Key, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("other key delete status = %d", resp.StatusCode)
-	}
-	resp = doJSON(t, http.MethodDelete, ts.URL+"/api/pages/"+page.Slug, k1.Key, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("owner delete status = %d", resp.StatusCode)
-	}
-
-	page2 := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "second"})
-	resp = doJSON(t, http.MethodGet, ts.URL+"/api/admin/stats", k1.Key, nil)
+	resp := doJSON(t, http.MethodGet, ts.URL+"/api/admin/stats", k1.Key, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("publisher stats status = %d", resp.StatusCode)
 	}
 
+	publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
 	resp = doJSON(t, http.MethodDelete, ts.URL+"/api/admin/keys/"+itoa(k1.ID), cfg.AdminKey, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("revoke status = %d", resp.StatusCode)
@@ -325,8 +308,8 @@ func TestKeysAndOwnership(t *testing.T) {
 	if stats.Pages != 1 || stats.Keys != 1 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
-	if page2.URL == "" {
-		t.Fatal("missing second page")
+	if k2.Key == "" {
+		t.Fatal("missing second key")
 	}
 }
 
@@ -387,140 +370,136 @@ func createPublisherKey(t *testing.T, ts *httptest.Server, adminKey, name string
 	return decode[api.CreateKeyResponse](t, resp)
 }
 
-func TestListPages(t *testing.T) {
-	srv, cfg, ts := newTestServer(t, nil)
-	k1 := createPublisherKey(t, ts, cfg.AdminKey, "one")
-	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
-	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	srv.now = func() time.Time { return base }
-	first := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "first", Title: "First"})
+func TestPageManagementHTTP(t *testing.T) {
+	_, cfg, ts := newTestServer(t, nil)
+	owner := createPublisherKey(t, ts, cfg.AdminKey, "owner")
+	other := createPublisherKey(t, ts, cfg.AdminKey, "other")
+	page := publishPage(t, ts, owner.Key, api.PublishRequest{HTML: "owned", Title: "Owned"})
+	publishPage(t, ts, other.Key, api.PublishRequest{HTML: "other"})
+	publishPage(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "admin"})
 
-	srv.now = func() time.Time { return base.Add(time.Second) }
-	second := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "second", Title: "Second", Permanent: true})
-
-	srv.now = func() time.Time { return base.Add(2 * time.Second) }
-	publishPage(t, ts, k2.Key, api.PublishRequest{HTML: "other"})
-
-	srv.now = func() time.Time { return base.Add(3 * time.Second) }
-	adminPage := publishPage(t, ts, cfg.AdminKey, api.PublishRequest{HTML: "admin"})
-
-	resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages", k1.Key, nil)
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		t.Fatalf("list status=%d body=%s", resp.StatusCode, data)
-	}
-	list := decode[api.PageListResponse](t, resp)
-	if list.Total != 2 || len(list.Pages) != 2 || list.Limit != 100 || list.Offset != 0 {
-		t.Fatalf("unexpected list: %+v", list)
-	}
-	if list.Pages[0].Slug != second.Slug || list.Pages[1].Slug != first.Slug {
-		t.Fatalf("unexpected order: %+v", list.Pages)
-	}
-	if list.Pages[0].ExpiresAt != nil || list.Pages[1].ExpiresAt == nil {
-		t.Fatalf("unexpected expiries: %+v", list.Pages)
-	}
-	if list.Pages[0].URL != "http://example.test/"+second.Slug {
-		t.Fatalf("unexpected URL: %q", list.Pages[0].URL)
-	}
-	if list.Pages[0].OwnerKeyID == nil || *list.Pages[0].OwnerKeyID != k1.ID {
-		t.Fatalf("unexpected owner: %+v", list.Pages[0])
-	}
-
-	resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages?limit=1&offset=1", k1.Key, nil)
-	paged := decode[api.PageListResponse](t, resp)
-	if paged.Total != 2 || len(paged.Pages) != 1 || paged.Pages[0].Slug != first.Slug {
-		t.Fatalf("unexpected paged list: %+v", paged)
-	}
-
-	resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages", cfg.AdminKey, nil)
-	all := decode[api.PageListResponse](t, resp)
-	if all.Total != 4 || len(all.Pages) != 4 || all.Pages[0].Slug != adminPage.Slug {
-		t.Fatalf("unexpected admin list: %+v", all)
-	}
-	if all.Pages[0].OwnerKeyID != nil {
-		t.Fatalf("admin page has owner: %+v", all.Pages[0])
-	}
-
-	for _, query := range []string{"limit=0", "limit=501", "limit=x", "offset=-1", "offset=x"} {
-		resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages?"+query, k1.Key, nil)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("%s: status=%d", query, resp.StatusCode)
+	t.Run("list shows the caller's pages", func(t *testing.T) {
+		resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages", owner.Key, nil)
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			t.Fatalf("list status=%d body=%s", resp.StatusCode, data)
 		}
-	}
+		list := decode[api.PageListResponse](t, resp)
+		if list.Total != 1 || len(list.Pages) != 1 || list.Pages[0].Slug != page.Slug {
+			t.Fatalf("unexpected list: %+v", list)
+		}
+		if list.Pages[0].URL != "http://example.test/"+page.Slug {
+			t.Fatalf("unexpected URL: %q", list.Pages[0].URL)
+		}
+	})
 
-	resp = doJSON(t, http.MethodGet, ts.URL+"/api/pages", "", nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("missing key status=%d", resp.StatusCode)
-	}
+	t.Run("admin lists every page", func(t *testing.T) {
+		resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages?limit=2&offset=1", cfg.AdminKey, nil)
+		list := decode[api.PageListResponse](t, resp)
+		if list.Total != 3 || len(list.Pages) != 2 || list.Limit != 2 || list.Offset != 1 {
+			t.Fatalf("unexpected admin list: %+v", list)
+		}
+	})
+
+	t.Run("list rejects bad paging", func(t *testing.T) {
+		for _, query := range []string{"limit=0", "limit=501", "limit=x", "offset=-1", "offset=x"} {
+			resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages?"+query, owner.Key, nil)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s: status=%d", query, resp.StatusCode)
+			}
+		}
+	})
+
+	t.Run("anonymous reads are not ownership checked", func(t *testing.T) {
+		resp, err := http.Get(ts.URL + "/" + page.Slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("anonymous read status=%d", resp.StatusCode)
+		}
+	})
+
+	t.Run("foreign page is masked as not found", func(t *testing.T) {
+		resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", other.Key, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("foreign expire status=%d", resp.StatusCode)
+		}
+		resp = doJSON(t, http.MethodDelete, ts.URL+"/api/pages/"+page.Slug, other.Key, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("foreign delete status=%d", resp.StatusCode)
+		}
+	})
+
+	t.Run("owner expires and cannot expire twice", func(t *testing.T) {
+		resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", owner.Key, nil)
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			t.Fatalf("owner expire status=%d body=%s", resp.StatusCode, data)
+		}
+		expired := decode[api.ExpirePageResponse](t, resp)
+		if !expired.Expired {
+			t.Fatalf("unexpected expire response: %+v", expired)
+		}
+		resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", owner.Key, nil)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("second expire status=%d", resp.StatusCode)
+		}
+		gone, err := http.Get(ts.URL + "/" + page.Slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer gone.Body.Close()
+		if gone.StatusCode != http.StatusGone {
+			t.Fatalf("expired page status=%d", gone.StatusCode)
+		}
+	})
+
+	t.Run("owner deletes", func(t *testing.T) {
+		doomed := publishPage(t, ts, owner.Key, api.PublishRequest{HTML: "doomed"})
+		resp := doJSON(t, http.MethodDelete, ts.URL+"/api/pages/"+doomed.Slug, owner.Key, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("owner delete status=%d", resp.StatusCode)
+		}
+	})
+
+	t.Run("management requires a key", func(t *testing.T) {
+		resp := doJSON(t, http.MethodGet, ts.URL+"/api/pages", "", nil)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("list missing key status=%d", resp.StatusCode)
+		}
+		resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", "", nil)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expire missing key status=%d", resp.StatusCode)
+		}
+		resp = doJSON(t, http.MethodDelete, ts.URL+"/api/pages/"+page.Slug, "", nil)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("delete missing key status=%d", resp.StatusCode)
+		}
+	})
 }
 
-func TestExpirePage(t *testing.T) {
-	srv, cfg, ts := newTestServer(t, nil)
-	k1 := createPublisherKey(t, ts, cfg.AdminKey, "one")
-	k2 := createPublisherKey(t, ts, cfg.AdminKey, "two")
-	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	srv.now = func() time.Time { return base }
-	page := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "owned"})
-
-	resp := doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k2.Key, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("other key expire status=%d", resp.StatusCode)
+func TestPageHTTPError(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		status int
+		msg    string
+	}{
+		{name: "not found", err: pages.ErrNotFound, status: http.StatusNotFound, msg: "page not found"},
+		{name: "expired", err: pages.ErrExpired, status: http.StatusConflict, msg: "page already expired"},
+		{name: "list failure", err: pages.ErrList, status: http.StatusInternalServerError, msg: "could not list pages"},
+		{name: "expire failure", err: pages.ErrExpire, status: http.StatusInternalServerError, msg: "could not expire page"},
+		{name: "delete failure", err: pages.ErrDelete, status: http.StatusInternalServerError, msg: "could not delete page"},
+		{name: "unknown failure", err: errors.New("boom"), status: http.StatusInternalServerError, msg: "could not manage page"},
 	}
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", "", nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("missing key expire status=%d", resp.StatusCode)
-	}
-
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k1.Key, nil)
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		t.Fatalf("owner expire status=%d body=%s", resp.StatusCode, data)
-	}
-	expired := decode[api.ExpirePageResponse](t, resp)
-	if !expired.Expired || !expired.ExpiresAt.Equal(base) {
-		t.Fatalf("unexpected expire response: %+v", expired)
-	}
-
-	gone, err := http.Get(ts.URL + "/" + page.Slug)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gone.Body.Close()
-	if gone.StatusCode != http.StatusGone {
-		t.Fatalf("expired page status=%d", gone.StatusCode)
-	}
-
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+page.Slug+"/expire", k1.Key, nil)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("second expire status=%d", resp.StatusCode)
-	}
-
-	permanent := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "forever", Permanent: true})
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+permanent.Slug+"/expire", k1.Key, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("permanent expire status=%d", resp.StatusCode)
-	}
-	gone, err = http.Get(ts.URL + "/" + permanent.Slug)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gone.Body.Close()
-	if gone.StatusCode != http.StatusGone {
-		t.Fatalf("expired permanent page status=%d", gone.StatusCode)
-	}
-
-	adminExpire := publishPage(t, ts, k1.Key, api.PublishRequest{HTML: "admin can expire"})
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/"+adminExpire.Slug+"/expire", cfg.AdminKey, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("admin expire status=%d", resp.StatusCode)
-	}
-
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/notthere/expire", k1.Key, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("missing page expire status=%d", resp.StatusCode)
-	}
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/pages/zz/expire", k1.Key, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("invalid slug expire status=%d", resp.StatusCode)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, msg := pageHTTPError(tc.err)
+			if status != tc.status || msg != tc.msg {
+				t.Fatalf("pageHTTPError() = %d %q, want %d %q", status, msg, tc.status, tc.msg)
+			}
+		})
 	}
 }

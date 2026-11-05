@@ -20,6 +20,7 @@ import (
 	"github.com/CNife/flyer/internal/api"
 	"github.com/CNife/flyer/internal/auth"
 	"github.com/CNife/flyer/internal/config"
+	"github.com/CNife/flyer/internal/pages"
 	"github.com/CNife/flyer/internal/publish"
 	"github.com/CNife/flyer/internal/store"
 )
@@ -43,6 +44,7 @@ type Server struct {
 	cfg             config.Config
 	store           *store.Store
 	publisher       *publish.Publisher
+	pages           *pages.Manager
 	signer          *auth.Signer
 	logger          *log.Logger
 	mux             *http.ServeMux
@@ -65,6 +67,7 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) *Server {
 		cfg:             cfg,
 		store:           st,
 		publisher:       publisher,
+		pages:           pages.New(st, cfg.BaseURL),
 		signer:          auth.NewSigner(cfg.SessionSecret),
 		logger:          logger,
 		mux:             http.NewServeMux(),
@@ -267,33 +270,16 @@ func (s *Server) handleListPages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var owner *int64
-	if !id.isAdmin {
-		owner = id.keyID
-	}
-	pages, total, err := s.store.ListPages(r.Context(), owner, limit, offset)
+	res, err := s.pages.List(r.Context(), pageCaller(id), limit, offset)
 	if err != nil {
-		s.logger.Printf("list pages: %v", err)
-		writeError(w, http.StatusInternalServerError, "could not list pages")
+		status, msg := pageHTTPError(err)
+		if status >= http.StatusInternalServerError {
+			s.logger.Printf("list pages: %v", err)
+		}
+		writeError(w, status, msg)
 		return
 	}
-	baseURL := strings.TrimRight(s.cfg.BaseURL, "/")
-	out := make([]api.Page, 0, len(pages))
-	for _, p := range pages {
-		out = append(out, api.Page{
-			Slug:       p.Slug,
-			Title:      p.Title,
-			URL:        baseURL + "/" + p.Slug,
-			Size:       p.Size,
-			Protected:  p.PasswordHash != "",
-			OwnerKeyID: p.OwnerKeyID,
-			CreatedAt:  p.CreatedAt,
-			ExpiresAt:  p.ExpiresAt,
-		})
-	}
-	writeJSON(w, http.StatusOK, api.PageListResponse{
-		Pages: out, Total: total, Limit: limit, Offset: offset,
-	})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func pageListParams(r *http.Request) (int, int, error) {
@@ -322,47 +308,16 @@ func (s *Server) handleExpirePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
 		return
 	}
-	slug := r.PathValue("slug")
-	if !auth.ValidSlug(slug) {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
-	}
-	page, err := s.store.GetPage(r.Context(), slug)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
-	}
+	res, err := s.pages.Expire(r.Context(), pageCaller(id), r.PathValue("slug"), s.now())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read page")
-		return
-	}
-	if !canManage(id, page) {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
-	}
-	now := s.now()
-	if err := s.store.ExpirePage(r.Context(), slug, now); err != nil {
-		switch {
-		case errors.Is(err, store.ErrExpired):
-			writeError(w, http.StatusConflict, "page already expired")
-		case errors.Is(err, store.ErrNotFound):
-			writeError(w, http.StatusNotFound, "page not found")
-		default:
-			s.logger.Printf("expire page %s: %v", slug, err)
-			writeError(w, http.StatusInternalServerError, "could not expire page")
+		status, msg := pageHTTPError(err)
+		if status >= http.StatusInternalServerError {
+			s.logger.Printf("expire page: %v", err)
 		}
+		writeError(w, status, msg)
 		return
 	}
-	writeJSON(w, http.StatusOK, api.ExpirePageResponse{
-		Expired: true, ExpiresAt: time.Unix(now.Unix(), 0),
-	})
-}
-
-func canManage(id *identity, page *store.Page) bool {
-	if id.isAdmin {
-		return true
-	}
-	return page.OwnerKeyID != nil && id.keyID != nil && *page.OwnerKeyID == *id.keyID
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleDeletePage(w http.ResponseWriter, r *http.Request) {
@@ -371,34 +326,40 @@ func (s *Server) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
 		return
 	}
-	slug := r.PathValue("slug")
-	if !auth.ValidSlug(slug) {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
-	}
-	page, err := s.store.GetPage(r.Context(), slug)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
-	}
+	res, err := s.pages.Delete(r.Context(), pageCaller(id), r.PathValue("slug"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read page")
-		return
-	}
-	if !canManage(id, page) {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
-	}
-	if err := s.store.DeletePage(r.Context(), slug); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "page not found")
-			return
+		status, msg := pageHTTPError(err)
+		if status >= http.StatusInternalServerError {
+			s.logger.Printf("delete page: %v", err)
 		}
-		s.logger.Printf("delete page %s: %v", slug, err)
-		writeError(w, http.StatusInternalServerError, "could not delete page")
+		writeError(w, status, msg)
 		return
 	}
-	writeJSON(w, http.StatusOK, api.DeletePageResponse{Deleted: true})
+	writeJSON(w, http.StatusOK, res)
+}
+
+// pageHTTPError maps the pages module's error modes onto HTTP. The module does
+// not know about HTTP; the adapter owns status codes.
+func pageHTTPError(err error) (int, string) {
+	switch {
+	case errors.Is(err, pages.ErrNotFound):
+		return http.StatusNotFound, pages.ErrNotFound.Error()
+	case errors.Is(err, pages.ErrExpired):
+		return http.StatusConflict, pages.ErrExpired.Error()
+	case errors.Is(err, pages.ErrList):
+		return http.StatusInternalServerError, pages.ErrList.Error()
+	case errors.Is(err, pages.ErrExpire):
+		return http.StatusInternalServerError, pages.ErrExpire.Error()
+	case errors.Is(err, pages.ErrDelete):
+		return http.StatusInternalServerError, pages.ErrDelete.Error()
+	default:
+		return http.StatusInternalServerError, "could not manage page"
+	}
+}
+
+// pageCaller maps the HTTP identity onto the pages module's Caller.
+func pageCaller(id *identity) pages.Caller {
+	return pages.Caller{Admin: id.isAdmin, KeyID: id.keyID}
 }
 
 func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
