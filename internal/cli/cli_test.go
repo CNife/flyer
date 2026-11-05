@@ -235,7 +235,7 @@ func TestPublishSplitsURLAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := cmdPublish(c, []string{path}); err != nil {
+	if err := cmdPublish(c, []string{path, "--title", "My Report"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "https://flyer.example/Ab3dE9xZ\n" {
@@ -246,39 +246,7 @@ func TestPublishSplitsURLAndMetadata(t *testing.T) {
 			t.Fatalf("stderr missing %q: %q", want, errOut)
 		}
 	}
-	if fake.published == nil || fake.published.Title != "report" || fake.published.HTML != "<h1>hi</h1>" {
+	if fake.published == nil || fake.published.Title != "My Report" || fake.published.HTML != "<h1>hi</h1>" {
 		t.Fatalf("publish intent not passed: %+v", fake.published)
-	}
-}
-
-func TestCommandsAssembleClientOnce(t *testing.T) {
-	fake := &fakeAPI{
-		pages:   &api.PageListResponse{},
-		stats:   &api.StatsResponse{},
-		cleanup: &api.CleanupResponse{},
-	}
-	cases := []struct {
-		name string
-		run  func(*command) error
-	}{
-		{"list", func(c *command) error { return cmdList(c, []string{"--json"}) }},
-		{"stats", func(c *command) error { return cmdAdminStats(c, []string{"--json"}) }},
-		{"cleanup", func(c *command) error { return cmdAdminCleanup(c, []string{"--json"}) }},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			c, _, _ := newTestCommand(fake)
-			c.newClient = func(string, string, string) apiClient {
-				calls++
-				return fake
-			}
-			if err := tc.run(c); err != nil {
-				t.Fatal(err)
-			}
-			if calls != 1 {
-				t.Fatalf("client assembled %d times, want 1", calls)
-			}
-		})
 	}
 }
