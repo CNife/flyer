@@ -40,21 +40,22 @@ func Run(args []string) error {
 		printUsage()
 		return nil
 	}
+	c := newCommand()
 	switch args[0] {
 	case "publish", "pub":
-		return cmdPublish(args[1:])
+		return cmdPublish(c, args[1:])
 	case "list", "ls":
-		return cmdList(args[1:])
+		return cmdList(c, args[1:])
 	case "open":
-		return cmdOpen(args[1:])
+		return cmdOpen(c, args[1:])
 	case "expire":
-		return cmdExpire(args[1:])
+		return cmdExpire(c, args[1:])
 	case "delete", "rm":
-		return cmdDelete(args[1:])
+		return cmdDelete(c, args[1:])
 	case "admin":
-		return cmdAdmin(args[1:])
+		return cmdAdmin(c, args[1:])
 	case "config":
-		return cmdConfig(args[1:])
+		return cmdConfig(c, args[1:])
 	case "init-server":
 		return cmdInitServer(args[1:])
 	case "serve":
@@ -68,6 +69,110 @@ func Run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q (try flyer help)", args[0])
 	}
+}
+
+// apiClient is the client adapter the commands run against. *client.Client is
+// the production adapter; tests substitute an in-process fake so command
+// output and assembly can be exercised without a server or real config file.
+type apiClient interface {
+	Publish(ctx context.Context, req api.PublishRequest) (*api.PublishResponse, error)
+	ListPages(ctx context.Context, limit, offset int) (*api.PageListResponse, error)
+	PageStatus(ctx context.Context, slug string) (int, error)
+	ExpirePage(ctx context.Context, slug string) (*api.ExpirePageResponse, error)
+	DeletePage(ctx context.Context, slug string) error
+	CreateKey(ctx context.Context, name, role string) (*api.CreateKeyResponse, error)
+	ListKeys(ctx context.Context) ([]api.Key, error)
+	RevokeKey(ctx context.Context, id int64) error
+	Stats(ctx context.Context) (*api.StatsResponse, error)
+	Cleanup(ctx context.Context) (*api.CleanupResponse, error)
+	PageURL(slug string) string
+}
+
+// command is one CLI invocation. It owns the pieces every command used to
+// assemble by hand: the client config, key selection for the command's
+// credential role, the client adapter, and the output streams. Config is
+// loaded lazily so --help and local commands never touch the config file.
+type command struct {
+	cfg       ClientConfig
+	cfgLoaded bool
+
+	out              io.Writer
+	errOut           io.Writer
+	stderrIsTerminal bool
+
+	newClient func(baseURL, key, adminKey string) apiClient
+}
+
+func newCommand() *command {
+	return &command{
+		out:              os.Stdout,
+		errOut:           os.Stderr,
+		stderrIsTerminal: isTerminal(os.Stderr),
+		newClient: func(baseURL, key, adminKey string) apiClient {
+			return client.New(baseURL, key, adminKey)
+		},
+	}
+}
+
+func (c *command) clientConfig() (ClientConfig, error) {
+	if c.cfgLoaded {
+		return c.cfg, nil
+	}
+	cfg, err := loadClientConfig()
+	if err != nil {
+		return ClientConfig{}, err
+	}
+	c.cfg, c.cfgLoaded = cfg, true
+	return cfg, nil
+}
+
+func (c *command) flagSet(name string) *flag.FlagSet {
+	fs := newFlagSet(name)
+	fs.SetOutput(c.errOut)
+	return fs
+}
+
+// publisher returns a client keyed by the publisher key: --key, FLYER_KEY, the
+// config key, then the admin key.
+func (c *command) publisher(serverFlag, keyFlag string) (apiClient, error) {
+	cfg, err := c.clientConfig()
+	if err != nil {
+		return nil, err
+	}
+	return c.newClient(resolveServer(serverFlag, cfg), resolveAPIKey(keyFlag, cfg), ""), nil
+}
+
+// admin returns a client keyed only by the admin key.
+func (c *command) admin(serverFlag, adminKeyFlag string) (apiClient, error) {
+	cfg, err := c.clientConfig()
+	if err != nil {
+		return nil, err
+	}
+	return c.newClient(resolveServer(serverFlag, cfg), "", resolveAdminKey(adminKeyFlag, cfg)), nil
+}
+
+// anonymous returns a client with no credentials, for public reads.
+func (c *command) anonymous(serverFlag string) (apiClient, error) {
+	cfg, err := c.clientConfig()
+	if err != nil {
+		return nil, err
+	}
+	return c.newClient(resolveServer(serverFlag, cfg), "", ""), nil
+}
+
+func (c *command) printJSON(v any) error {
+	enc := json.NewEncoder(c.out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func (c *command) printTable(header []string, rows [][]string) error {
+	tw := tabwriter.NewWriter(c.out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, strings.Join(header, "\t"))
+	for _, row := range rows {
+		fmt.Fprintln(tw, strings.Join(row, "\t"))
+	}
+	return tw.Flush()
 }
 
 func printUsage() {
@@ -155,8 +260,8 @@ The config file is created with mode 0600.
 `)
 }
 
-func cmdPublish(args []string) error {
-	fs := newFlagSet("publish")
+func cmdPublish(c *command, args []string) error {
+	fs := c.flagSet("publish")
 	serverFlag := fs.String("server", "", "server URL")
 	keyFlag := fs.String("key", "", "API key")
 	title := fs.String("title", "", "page title")
@@ -192,7 +297,7 @@ Examples:
 	if *permanent && *ttl != "" {
 		return errors.New("--permanent and --ttl are mutually exclusive")
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.publisher(*serverFlag, *keyFlag)
 	if err != nil {
 		return err
 	}
@@ -223,30 +328,27 @@ Examples:
 		}
 		req.TTLSeconds = secs
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
-	resp, err := c.Publish(context.Background(), req)
+	resp, err := cl.Publish(context.Background(), req)
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(resp)
+		return c.printJSON(resp)
 	}
-	fmt.Fprintln(os.Stdout, resp.URL)
-	fmt.Fprintf(os.Stderr, "slug: %s\n", resp.Slug)
+	fmt.Fprintln(c.out, resp.URL)
+	fmt.Fprintf(c.errOut, "slug: %s\n", resp.Slug)
 	if resp.ExpiresAt == nil {
-		fmt.Fprintln(os.Stderr, "expires: never")
+		fmt.Fprintln(c.errOut, "expires: never")
 	} else {
-		fmt.Fprintf(os.Stderr, "expires: %s (%s)\n",
+		fmt.Fprintf(c.errOut, "expires: %s (%s)\n",
 			resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"),
 			time.Until(*resp.ExpiresAt).Round(time.Minute))
 	}
-	fmt.Fprintf(os.Stderr, "protected: %s\n", yesNo(resp.Protected))
-	if !*noQR && (*forceQR || isTerminal(os.Stderr)) {
+	fmt.Fprintf(c.errOut, "protected: %s\n", yesNo(resp.Protected))
+	if !*noQR && (*forceQR || c.stderrIsTerminal) {
 		qrterminal.GenerateWithConfig(resp.URL, qrterminal.Config{
 			Level:      qrterminal.L,
-			Writer:     os.Stderr,
+			Writer:     c.errOut,
 			HalfBlocks: true,
 			QuietZone:  1,
 		})
@@ -254,8 +356,8 @@ Examples:
 	return nil
 }
 
-func cmdList(args []string) error {
-	fs := newFlagSet("list")
+func cmdList(c *command, args []string) error {
+	fs := c.flagSet("list")
 	serverFlag := fs.String("server", "", "server URL")
 	keyFlag := fs.String("key", "", "API key")
 	limit := fs.Int("limit", 100, "maximum pages to return (1-500)")
@@ -282,45 +384,42 @@ Flags:
 	if *offset < 0 {
 		return errors.New("--offset must not be negative")
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.publisher(*serverFlag, *keyFlag)
 	if err != nil {
 		return err
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
-	list, err := c.ListPages(context.Background(), *limit, *offset)
+	list, err := cl.ListPages(context.Background(), *limit, *offset)
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(list)
+		return c.printJSON(list)
 	}
 	if len(list.Pages) == 0 {
 		if list.Total == 0 {
-			fmt.Fprintln(os.Stderr, "no pages")
+			fmt.Fprintln(c.errOut, "no pages")
 		} else {
-			fmt.Fprintf(os.Stderr, "no pages at offset %d (total %d)\n", *offset, list.Total)
+			fmt.Fprintf(c.errOut, "no pages at offset %d (total %d)\n", *offset, list.Total)
 		}
 		return nil
 	}
 	now := time.Now()
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SLUG\tTITLE\tSTATE\tEXPIRES\tSIZE")
+	rows := make([][]string, 0, len(list.Pages))
 	for _, p := range list.Pages {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n",
-			p.Slug, tableCell(p.Title), pageState(p, now), pageExpires(p), p.Size)
+		rows = append(rows, []string{
+			p.Slug, tableCell(p.Title), pageState(p, now), pageExpires(p), strconv.FormatInt(p.Size, 10),
+		})
 	}
-	if err := tw.Flush(); err != nil {
+	if err := c.printTable([]string{"SLUG", "TITLE", "STATE", "EXPIRES", "SIZE"}, rows); err != nil {
 		return err
 	}
 	end := *offset + len(list.Pages)
 	if *offset > 0 || int64(end) < list.Total {
-		fmt.Fprintf(os.Stderr, "showing %d-%d of %d", *offset+1, end, list.Total)
+		fmt.Fprintf(c.errOut, "showing %d-%d of %d", *offset+1, end, list.Total)
 		if int64(end) < list.Total {
-			fmt.Fprintf(os.Stderr, " (use --offset %d for more)", end)
+			fmt.Fprintf(c.errOut, " (use --offset %d for more)", end)
 		}
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(c.errOut)
 	}
 	return nil
 }
@@ -351,8 +450,8 @@ func tableCell(s string) string {
 	return s
 }
 
-func cmdOpen(args []string) error {
-	fs := newFlagSet("open")
+func cmdOpen(c *command, args []string) error {
+	fs := c.flagSet("open")
 	serverFlag := fs.String("server", "", "server URL")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `Usage: flyer open <slug> [flags]
@@ -372,13 +471,12 @@ Flags:
 	if fs.NArg() != 1 {
 		return errors.New("usage: flyer open <slug>")
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.anonymous(*serverFlag)
 	if err != nil {
 		return err
 	}
 	slug := fs.Arg(0)
-	c := client.New(resolveServer(*serverFlag, cfg), "", "")
-	status, err := c.PageStatus(context.Background(), slug)
+	status, err := cl.PageStatus(context.Background(), slug)
 	if err != nil {
 		return err
 	}
@@ -391,11 +489,11 @@ Flags:
 	default:
 		return fmt.Errorf("server returned %d", status)
 	}
-	pageURL := c.PageURL(slug)
+	pageURL := cl.PageURL(slug)
 	if err := openBrowser(pageURL); err != nil {
 		return fmt.Errorf("open %s: %w", pageURL, err)
 	}
-	fmt.Fprintf(os.Stderr, "opened %s\n", pageURL)
+	fmt.Fprintf(c.errOut, "opened %s\n", pageURL)
 	return nil
 }
 
@@ -416,8 +514,8 @@ func browserCommand(goos, url string) (string, []string) {
 	}
 }
 
-func cmdExpire(args []string) error {
-	fs := newFlagSet("expire")
+func cmdExpire(c *command, args []string) error {
+	fs := c.flagSet("expire")
 	serverFlag := fs.String("server", "", "server URL")
 	keyFlag := fs.String("key", "", "API key")
 	fs.Usage = func() {
@@ -438,26 +536,25 @@ Flags:
 	if fs.NArg() == 0 {
 		return errors.New("usage: flyer expire <slug> [<slug> ...]")
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.publisher(*serverFlag, *keyFlag)
 	if err != nil {
 		return err
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
 	var errs []error
 	for _, slug := range fs.Args() {
-		resp, err := c.ExpirePage(context.Background(), slug)
+		resp, err := cl.ExpirePage(context.Background(), slug)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", slug, err))
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "expired %s at %s\n", slug,
+		fmt.Fprintf(c.errOut, "expired %s at %s\n", slug,
 			resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
 	}
 	return errors.Join(errs...)
 }
 
-func cmdDelete(args []string) error {
-	fs := newFlagSet("delete")
+func cmdDelete(c *command, args []string) error {
+	fs := c.flagSet("delete")
 	serverFlag := fs.String("server", "", "server URL")
 	keyFlag := fs.String("key", "", "API key")
 	fs.Usage = func() {
@@ -476,47 +573,46 @@ Flags:
 	if fs.NArg() == 0 {
 		return errors.New("usage: flyer delete <slug> [<slug> ...]")
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.publisher(*serverFlag, *keyFlag)
 	if err != nil {
 		return err
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), resolveAPIKey(*keyFlag, cfg), "")
 	var errs []error
 	for _, slug := range fs.Args() {
-		if err := c.DeletePage(context.Background(), slug); err != nil {
+		if err := cl.DeletePage(context.Background(), slug); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", slug, err))
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "deleted %s\n", slug)
+		fmt.Fprintf(c.errOut, "deleted %s\n", slug)
 	}
 	return errors.Join(errs...)
 }
 
-func cmdAdmin(args []string) error {
+func cmdAdmin(c *command, args []string) error {
 	if len(args) == 0 || isHelp(args[0]) {
 		printAdminUsage()
 		return nil
 	}
 	switch args[0] {
 	case "key", "keys":
-		return cmdAdminKey(args[1:])
+		return cmdAdminKey(c, args[1:])
 	case "stats":
-		return cmdAdminStats(args[1:])
+		return cmdAdminStats(c, args[1:])
 	case "cleanup":
-		return cmdAdminCleanup(args[1:])
+		return cmdAdminCleanup(c, args[1:])
 	default:
 		return fmt.Errorf("unknown admin command %q (try flyer admin --help)", args[0])
 	}
 }
 
-func cmdAdminKey(args []string) error {
+func cmdAdminKey(c *command, args []string) error {
 	if len(args) == 0 || isHelp(args[0]) {
 		printAdminKeyUsage()
 		return nil
 	}
 	switch args[0] {
 	case "create":
-		fs := newFlagSet("admin key create")
+		fs := c.flagSet("admin key create")
 		serverFlag := fs.String("server", "", "server URL")
 		adminKeyFlag := fs.String("admin-key", "", "admin key")
 		name := fs.String("name", "", "key name")
@@ -531,26 +627,23 @@ func cmdAdminKey(args []string) error {
 		if strings.TrimSpace(*name) == "" {
 			return errors.New("--name is required")
 		}
-		cfg, err := loadClientConfig()
+		cl, err := c.admin(*serverFlag, *adminKeyFlag)
 		if err != nil {
 			return err
 		}
-		c := client.New(resolveServer(*serverFlag, cfg), "", resolveAdminKey(*adminKeyFlag, cfg))
-		resp, err := c.CreateKey(context.Background(), *name, *role)
+		resp, err := cl.CreateKey(context.Background(), *name, *role)
 		if err != nil {
 			return err
 		}
 		if *jsonOut {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(resp)
+			return c.printJSON(resp)
 		}
-		fmt.Fprintln(os.Stdout, resp.Key)
-		fmt.Fprintf(os.Stderr, "id: %d\nname: %s\nrole: %s\n", resp.ID, resp.Name, resp.Role)
+		fmt.Fprintln(c.out, resp.Key)
+		fmt.Fprintf(c.errOut, "id: %d\nname: %s\nrole: %s\n", resp.ID, resp.Name, resp.Role)
 		return nil
 
 	case "list":
-		fs := newFlagSet("admin key list")
+		fs := c.flagSet("admin key list")
 		serverFlag := fs.String("server", "", "server URL")
 		adminKeyFlag := fs.String("admin-key", "", "admin key")
 		jsonOut := fs.Bool("json", false, "print JSON")
@@ -560,34 +653,32 @@ func cmdAdminKey(args []string) error {
 			}
 			return err
 		}
-		cfg, err := loadClientConfig()
+		cl, err := c.admin(*serverFlag, *adminKeyFlag)
 		if err != nil {
 			return err
 		}
-		c := client.New(resolveServer(*serverFlag, cfg), "", resolveAdminKey(*adminKeyFlag, cfg))
-		keys, err := c.ListKeys(context.Background())
+		keys, err := cl.ListKeys(context.Background())
 		if err != nil {
 			return err
 		}
 		if *jsonOut {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(api.KeyListResponse{Keys: keys})
+			return c.printJSON(api.KeyListResponse{Keys: keys})
 		}
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tNAME\tROLE\tCREATED\tSTATUS")
+		rows := make([][]string, 0, len(keys))
 		for _, k := range keys {
 			status := "active"
 			if k.RevokedAt != nil {
 				status = "revoked"
 			}
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", k.ID, k.Name, k.Role,
-				k.CreatedAt.Local().Format("2006-01-02 15:04"), status)
+			rows = append(rows, []string{
+				strconv.FormatInt(k.ID, 10), k.Name, k.Role,
+				k.CreatedAt.Local().Format("2006-01-02 15:04"), status,
+			})
 		}
-		return tw.Flush()
+		return c.printTable([]string{"ID", "NAME", "ROLE", "CREATED", "STATUS"}, rows)
 
 	case "revoke":
-		fs := newFlagSet("admin key revoke")
+		fs := c.flagSet("admin key revoke")
 		serverFlag := fs.String("server", "", "server URL")
 		adminKeyFlag := fs.String("admin-key", "", "admin key")
 		if err := parseFlags(fs, args[1:]); err != nil {
@@ -603,15 +694,14 @@ func cmdAdminKey(args []string) error {
 		if err != nil || id <= 0 {
 			return errors.New("invalid key id")
 		}
-		cfg, err := loadClientConfig()
+		cl, err := c.admin(*serverFlag, *adminKeyFlag)
 		if err != nil {
 			return err
 		}
-		c := client.New(resolveServer(*serverFlag, cfg), "", resolveAdminKey(*adminKeyFlag, cfg))
-		if err := c.RevokeKey(context.Background(), id); err != nil {
+		if err := cl.RevokeKey(context.Background(), id); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "revoked key %d\n", id)
+		fmt.Fprintf(c.errOut, "revoked key %d\n", id)
 		return nil
 
 	default:
@@ -619,8 +709,8 @@ func cmdAdminKey(args []string) error {
 	}
 }
 
-func cmdAdminStats(args []string) error {
-	fs := newFlagSet("admin stats")
+func cmdAdminStats(c *command, args []string) error {
+	fs := c.flagSet("admin stats")
 	serverFlag := fs.String("server", "", "server URL")
 	adminKeyFlag := fs.String("admin-key", "", "admin key")
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -630,27 +720,24 @@ func cmdAdminStats(args []string) error {
 		}
 		return err
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.admin(*serverFlag, *adminKeyFlag)
 	if err != nil {
 		return err
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), "", resolveAdminKey(*adminKeyFlag, cfg))
-	st, err := c.Stats(context.Background())
+	st, err := cl.Stats(context.Background())
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(st)
+		return c.printJSON(st)
 	}
-	fmt.Printf("pages: %d (active %d, expired %d, permanent %d)\n", st.Pages, st.Active, st.Expired, st.Permanent)
-	fmt.Printf("bytes: %d\nkeys: %d\n", st.Bytes, st.Keys)
+	fmt.Fprintf(c.out, "pages: %d (active %d, expired %d, permanent %d)\n", st.Pages, st.Active, st.Expired, st.Permanent)
+	fmt.Fprintf(c.out, "bytes: %d\nkeys: %d\n", st.Bytes, st.Keys)
 	return nil
 }
 
-func cmdAdminCleanup(args []string) error {
-	fs := newFlagSet("admin cleanup")
+func cmdAdminCleanup(c *command, args []string) error {
+	fs := c.flagSet("admin cleanup")
 	serverFlag := fs.String("server", "", "server URL")
 	adminKeyFlag := fs.String("admin-key", "", "admin key")
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -660,30 +747,27 @@ func cmdAdminCleanup(args []string) error {
 		}
 		return err
 	}
-	cfg, err := loadClientConfig()
+	cl, err := c.admin(*serverFlag, *adminKeyFlag)
 	if err != nil {
 		return err
 	}
-	c := client.New(resolveServer(*serverFlag, cfg), "", resolveAdminKey(*adminKeyFlag, cfg))
-	resp, err := c.Cleanup(context.Background())
+	resp, err := cl.Cleanup(context.Background())
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(resp)
+		return c.printJSON(resp)
 	}
-	fmt.Printf("deleted: %d\n", resp.Deleted)
+	fmt.Fprintf(c.out, "deleted: %d\n", resp.Deleted)
 	return nil
 }
 
-func cmdConfig(args []string) error {
+func cmdConfig(c *command, args []string) error {
 	if len(args) == 0 || isHelp(args[0]) {
 		printConfigUsage()
 		return nil
 	}
-	cfg, err := loadClientConfig()
+	cfg, err := c.clientConfig()
 	if err != nil {
 		return err
 	}
@@ -693,14 +777,14 @@ func cmdConfig(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(path)
+		fmt.Fprintln(c.out, path)
 		return nil
 	case "show":
 		path, _ := clientConfigPath()
-		fmt.Printf("server: %s\n", valueOr(cfg.Server, "(not set)"))
-		fmt.Printf("key: %s\n", maskKey(cfg.Key))
-		fmt.Printf("admin_key: %s\n", maskKey(cfg.AdminKey))
-		fmt.Printf("path: %s\n", path)
+		fmt.Fprintf(c.out, "server: %s\n", valueOr(cfg.Server, "(not set)"))
+		fmt.Fprintf(c.out, "key: %s\n", maskKey(cfg.Key))
+		fmt.Fprintf(c.out, "admin_key: %s\n", maskKey(cfg.AdminKey))
+		fmt.Fprintf(c.out, "path: %s\n", path)
 		return nil
 	case "set":
 		if len(args) != 3 {
@@ -729,7 +813,7 @@ func cmdConfig(args []string) error {
 		if err := saveClientConfig(cfg); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stderr, "saved")
+		fmt.Fprintln(c.errOut, "saved")
 		return nil
 	default:
 		return fmt.Errorf("unknown config command %q", args[0])

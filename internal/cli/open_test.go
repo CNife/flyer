@@ -42,7 +42,7 @@ func TestOpenPageStatus(t *testing.T) {
 			}
 			defer func() { openBrowser = orig }()
 
-			err := cmdOpen([]string{"Ab3dE9xZ", "--server", srv.URL})
+			err := cmdOpen(newCommand(), []string{"Ab3dE9xZ", "--server", srv.URL})
 			if c.wantErr == "" {
 				if err != nil {
 					t.Fatalf("cmdOpen: %v", err)
@@ -63,7 +63,7 @@ func TestOpenPageStatus(t *testing.T) {
 
 func TestOpenRequiresOneSlug(t *testing.T) {
 	for _, args := range [][]string{nil, {"one", "two"}} {
-		if err := cmdOpen(args); err == nil {
+		if err := cmdOpen(newCommand(), args); err == nil {
 			t.Fatalf("cmdOpen(%v) succeeded, want usage error", args)
 		}
 	}
