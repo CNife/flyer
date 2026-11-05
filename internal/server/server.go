@@ -308,11 +308,12 @@ func (s *Server) handleExpirePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
 		return
 	}
-	res, err := s.pages.Expire(r.Context(), pageCaller(id), r.PathValue("slug"), s.now())
+	slug := r.PathValue("slug")
+	res, err := s.pages.Expire(r.Context(), pageCaller(id), slug, s.now())
 	if err != nil {
 		status, msg := pageHTTPError(err)
 		if status >= http.StatusInternalServerError {
-			s.logger.Printf("expire page: %v", err)
+			s.logger.Printf("expire page %s: %v", slug, err)
 		}
 		writeError(w, status, msg)
 		return
@@ -326,11 +327,12 @@ func (s *Server) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
 		return
 	}
-	res, err := s.pages.Delete(r.Context(), pageCaller(id), r.PathValue("slug"))
+	slug := r.PathValue("slug")
+	res, err := s.pages.Delete(r.Context(), pageCaller(id), slug)
 	if err != nil {
 		status, msg := pageHTTPError(err)
 		if status >= http.StatusInternalServerError {
-			s.logger.Printf("delete page: %v", err)
+			s.logger.Printf("delete page %s: %v", slug, err)
 		}
 		writeError(w, status, msg)
 		return
