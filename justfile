@@ -35,9 +35,13 @@ tidy-check:
 vet:
     go vet ./...
 
-# 单元测试（随机顺序）
+# 全部测试（随机顺序；test/e2e 会用真实二进制启动本地服务端）
 test:
     go test -shuffle=on ./...
+
+# 只跑端到端测试
+test-e2e:
+    go test -shuffle=on ./test/e2e
 
 # 竞态检测，CI 的 Linux job 用
 test-race:
@@ -57,6 +61,18 @@ workflows:
 
 # 提交前快检
 check: fmt-check tidy-check vet test
+
+# 发布策略测试（临时 git 仓库；需要 node）
+release-policy-test:
+    bash scripts/release-policy.test.sh
+
+# 容器 smoke（默认 flyer:ci；CONTAINER_ENGINE=podman 可换引擎）
+docker-smoke image="flyer:ci":
+    bash scripts/docker-smoke.sh "{{image}}"
+
+# 校验已发布 GitHub Release 的资产与 Linux 二进制（需要 gh）
+release-verify tag:
+    bash scripts/verify-release.sh "{{tag}}"
 
 # 本地全量门禁
 ci: check lint vuln workflows

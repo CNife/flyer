@@ -6,7 +6,7 @@
 #   PR_LABELS  comma-separated PR labels (default: empty)
 #
 # A PR may batch a release by adding the `skip-version` label; in that case
-# npm/package.json must stay unchanged. Docs/CI/tooling-only changes are
+# npm/package.json must stay unchanged. Docs/CI/tooling/test-only changes are
 # allowed without a version bump.
 set -euo pipefail
 
@@ -125,7 +125,7 @@ shipped=()
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   case "$file" in
-    .github/* | docs/* | scripts/* | *.md | LICENSE | .gitignore | .gitattributes | .githooks/* | justfile | .goreleaser.yaml | .no-mistakes.yaml)
+    .github/* | docs/* | scripts/* | test/* | *_test.go | npm/test/* | *.md | LICENSE | .gitignore | .gitattributes | .githooks/* | justfile | .goreleaser.yaml | .no-mistakes.yaml)
       ;;
     *)
       shipped+=("$file")
@@ -140,4 +140,4 @@ if [ "${#shipped[@]}" -gt 0 ]; then
   exit 1
 fi
 
-echo "release policy: docs/CI/tooling-only change, version stays at ${base_version}"
+echo "release policy: docs/CI/tooling/test-only change, version stays at ${base_version}"

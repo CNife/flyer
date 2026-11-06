@@ -5,19 +5,21 @@
 
 commands:
   prepare: "go mod download"
-  # 单元测试不到 1 秒，直接跑全量作为 targeted baseline。
+  # just test 包含 test/e2e；本地 run 做推送前早反馈，CI 仍是权威门。
   test: "just test"
   lint: "just lint"
   format: "just fmt"
 
 test:
   instructions: |
-    构建：`just build` 产出 dist/flyer。
-    CLI 场景直接运行 dist/flyer 子命令；服务端场景使用临时目录：
+    `just test` 包含 test/e2e：它构建真实二进制，只连 127.0.0.1 的临时服务端。
+    需要手写验证时，CLI 场景直接运行 dist/flyer 子命令；服务端场景使用临时目录：
     `dist/flyer init-server --dir <tmp> --base-url http://127.0.0.1:<port> --listen 127.0.0.1:<port>`，
     它把 admin key 打印到 stdout；所有 /api/ 接口都要带 `Authorization: Bearer <key>`，否则返回 401。
     再运行 `dist/flyer serve --dir <tmp>`，用 curl 验证 /health、发布和访问页面；/health 与页面 URL 不需要鉴权。
     结束后停掉进程。
+    新测试优先端到端；单元测试只补 E2E 无法稳定制造的缺口（注入时钟、内部错误、并发边界等）。
+    本地 run 只做推送前早反馈；CI 是权威门，不要因为本地通过而跳过 CI 覆盖项。
     只用临时目录和这次生成的临时 key，不要写入仓库，不要复用生产 key，也不要访问生产地址。
 
 ci:
