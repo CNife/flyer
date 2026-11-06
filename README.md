@@ -38,11 +38,16 @@ sudo pacman -S just golangci-lint
 ```
 
 ```bash
-just setup   # 挂载 .githooks/pre-commit，每个 clone 一次
-just check   # 提交前快检：gofmt / go mod tidy / go vet / go test
-just ci      # 全量门禁：check + golangci-lint + govulncheck + actionlint
-just --list  # 全部任务
+just setup                # 挂载 .githooks/pre-commit，每个 clone 一次
+just check                # 提交前快检：gofmt / go mod tidy / go vet / go test
+just test-e2e             # 只跑端到端测试
+just ci                   # 全量门禁：check + golangci-lint + govulncheck + actionlint
+just release-policy-test  # 发布策略回归测试（临时 git 仓库）
+just docker-smoke flyer:ci # 本地容器 smoke（先 docker build -t flyer:ci .）
+just --list               # 全部任务
 ```
+
+`just test` 包含 `test/e2e`：测试会构建真实二进制，启动只监听 `127.0.0.1` 的临时服务端，覆盖发布、密码、过期、管理、配置和并发。它不连生产地址，也不要求外部服务。CI 在 macOS/Windows 跑普通测试，Linux 用 race 跑同一套；CI 是合并前的权威门，no-mistakes 只做推送前早反馈。
 
 推送前走 no-mistakes 门禁（每个 clone 先 `no-mistakes init`）：
 
@@ -251,6 +256,7 @@ curl -X DELETE "https://flyer.cnife.cn/api/pages/Ab3dE9xZ" \
 
 - GitHub Release 资产必须先生成；仓库必须保持 public。
 - tag 必须与 `npm/package.json` 的版本一致。
+- 发布 workflow 会校验全部 Release 资产的 checksum、运行 Linux 二进制，并对刚推送的镜像做容器 smoke；失败时 npm job 不会开始。
 - npm 使用 OIDC staged publish，维护者 2FA 批准后公开；不使用 `NPM_TOKEN`。
 - 已发布 tag 不移动、不删除；坏版本发补丁版并 `npm deprecate`。
 

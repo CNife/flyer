@@ -10,6 +10,7 @@
 - GitHub Release 资产必须先于 npm 包可用；npm 包只是下载二进制的 launcher。
 - 已发布 tag 不移动、不删除。坏版本发补丁版并 `npm deprecate`。
 - 改发布内容的 PR 默认在同一个 PR bump `npm/package.json`；CI 的 release policy 会阻塞未 bump 的发布路径改动。
+- 测试（`*_test.go`、`test/`、`npm/test/`）、CI、文档和工具脚本不进入发布产物，不触发版本 bump；发布路径本身仍然需要 bump 或 `skip-version`。
 - 要批量发版时，给 feature PR 加 `skip-version`，之后用发版 PR 统一 bump；Dependabot PR 自动带这个标签。
 - 生产部署只使用 GitHub Release 的 tag 资产；部署脚本属于维护者的 ops 层，不放进本仓库。
 - PR 合并和 `npm stage approve` 由维护者完成；除非维护者当场明确授权，agent 不代做。agent 不索取、不代输 2FA 代码。
@@ -28,7 +29,9 @@ main commit
              │    │    ├─ 原始二进制
              │    │    ├─ tar.gz / zip
              │    │    └─ checksums.txt
-             │    └─ GHCR image
+             │    ├─ verify-release.sh：全部 checksum + Linux 二进制 version
+             │    ├─ GHCR image
+             │    └─ docker-smoke.sh：刚推送的镜像发布并取回页面
              └─ npm job
                   ├─ npm test
                   ├─ 校验 tag 与 package.json 版本
@@ -63,6 +66,9 @@ main commit
 
    ```bash
    just ci
+   just release-policy-test
+   docker build -t flyer:ci .
+   just docker-smoke flyer:ci
    cd npm
    npm test
    npm pack --dry-run
@@ -102,6 +108,12 @@ git push origin "$TAG"
 ```bash
 gh run list --repo CNife/flyer --limit 5
 gh run watch <run-id> --repo CNife/flyer --exit-status
+```
+
+workflow 会在 GoReleaser 之后自动运行 `scripts/verify-release.sh`，校验全部资产 checksum 和 Linux 二进制；镜像推送后再运行 `scripts/docker-smoke.sh`。这两步失败会挡住 npm job。也可以对已发布版本手动复验：
+
+```bash
+just release-verify v0.3.4
 ```
 
 确认 GitHub Release 资产：
@@ -190,7 +202,8 @@ npm trust github @cnife/flyer \
 | staged 状态是 `validating` | 自动审核未完成 | 等待变为 `staged` 再批准 |
 | 刚发布后 `npm install` 报 `ETARGET` | registry 传播延迟 | 等 30–60 秒，用 `--prefer-online` 重试；不要重复发版 |
 | npm 报版本已存在 / `EPUBLISHCONFLICT` | 版本已发布 | bump patch；不要复用 tag |
-| workflow 在 GoReleaser 后失败 | Release 可能已经创建 | 先 `gh release view` 检查资产；不要创建重复 Release |
+| workflow 在 GoReleaser 后失败 | Release 可能已经创建；verify 或镜像 smoke 失败会挡住 npm | 先 `gh release view` 检查资产；不要创建重复 Release，不要移动 tag |
+| `verify-release.sh` 报 checksum 不符 | 资产上传不完整或 Release 被改写 | 检查 `gh release view`；修复后发补丁版，不要覆盖已发布资产 |
 | tag 触发时 workflow 仍是 disabled | tag 与 workflow 状态操作并发 | 先 `gh workflow list --all` 确认 active，再 push tag |
 | 旧 workflow 报 `Set npm version` 失败 | v0.1.0 的历史流程 | 当前流程只校验版本；不要重跑旧 tag |
 | 已发布版本有问题 | 版本不可可靠撤回 | `npm deprecate @cnife/flyer@<version> "reason"`，然后发补丁版 |
