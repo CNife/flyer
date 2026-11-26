@@ -266,7 +266,7 @@ curl -X PUT https://flyer.cnife.cn/api/pages/Ab3dE9xZ \
 
 - 默认 TTL 1 小时，最大 30 天；`permanent` 永不过期。
 - `update` 原地替换 HTML，slug、URL、owner、密码和 `created_at` 不变；不显式改 TTL 时保留原过期时间。
-- 单文件上限 10 MiB，每个 key 每小时 60 次上传。
+- 单文件上限 10 MiB，每个 key 每小时 60 次 publish/update。
 - 密码用 argon2id 哈希；解锁 cookie 1 小时，且不超过页面剩余寿命。
 - 过期后 24 小时内返回 `410 Gone`，之后返回 `404`；后台每 15 分钟清理。
 - 页面统一带 `X-Robots-Tag: noindex, nofollow, noarchive`，`/robots.txt` 禁止抓取。
