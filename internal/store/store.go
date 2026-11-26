@@ -183,9 +183,11 @@ func (s *Store) writeTempPage(html []byte) (string, error) {
 }
 
 // UpdatePage replaces the HTML and writable metadata of slug while keeping its
-// identity, owner, password, and creation time. The old file is replaced by an
-// atomic rename only after the new content is fully written and synced.
-func (s *Store) UpdatePage(ctx context.Context, slug string, u PageUpdate, html []byte) error {
+// identity, owner, password, and creation time. The UPDATE carries an expiry
+// guard so an expired Page is rejected before its file is touched; the file is
+// replaced by an atomic rename only after the new content is fully written,
+// synced, and the metadata update has succeeded.
+func (s *Store) UpdatePage(ctx context.Context, slug string, u PageUpdate, now time.Time, html []byte) error {
 	tmpName, err := s.writeTempPage(html)
 	if err != nil {
 		return err
@@ -208,13 +210,10 @@ func (s *Store) UpdatePage(ctx context.Context, slug string, u PageUpdate, html 
 	if filepath.Base(fileName) != fileName || fileName == "" {
 		return errors.New("invalid page file name")
 	}
-	dest := filepath.Join(s.pagesDir, fileName)
-	if err := os.Rename(tmpName, dest); err != nil {
-		return err
-	}
 	res, err := tx.ExecContext(ctx, `
 UPDATE pages SET title = ?, size = ?, expires_at = ?
-WHERE slug = ?`, u.Title, u.Size, unixPtr(u.ExpiresAt), slug)
+WHERE slug = ? AND (expires_at IS NULL OR expires_at > ?)`,
+		u.Title, u.Size, unixPtr(u.ExpiresAt), slug, now.Unix())
 	if err != nil {
 		return err
 	}
@@ -223,8 +222,11 @@ WHERE slug = ?`, u.Title, u.Size, unixPtr(u.ExpiresAt), slug)
 		return err
 	}
 	if n == 0 {
-		_ = os.Remove(dest)
-		return ErrNotFound
+		return ErrExpired
+	}
+	dest := filepath.Join(s.pagesDir, fileName)
+	if err := os.Rename(tmpName, dest); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

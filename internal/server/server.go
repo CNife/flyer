@@ -282,6 +282,10 @@ func (s *Server) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, pages.ErrNotFound.Error())
 			return
 		}
+		if errors.Is(err, store.ErrExpired) {
+			writeError(w, http.StatusConflict, pages.ErrExpired.Error())
+			return
+		}
 		status, msg := publishHTTPError(err)
 		if status >= http.StatusInternalServerError {
 			s.logger.Printf("update page %s: %v", slug, err)

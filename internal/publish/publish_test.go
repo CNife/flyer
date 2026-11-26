@@ -46,7 +46,7 @@ func (f *fakePages) CreatePage(_ context.Context, p store.Page, html []byte) err
 	return nil
 }
 
-func (f *fakePages) UpdatePage(_ context.Context, slug string, u store.PageUpdate, html []byte) error {
+func (f *fakePages) UpdatePage(_ context.Context, slug string, u store.PageUpdate, _ time.Time, html []byte) error {
 	f.updates = append(f.updates, updateCall{slug: slug, update: u, html: string(html)})
 	return f.updateErr
 }

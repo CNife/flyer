@@ -127,7 +127,7 @@ func TestUpdatePage(t *testing.T) {
 		Title:     "new title",
 		Size:      8,
 		ExpiresAt: &newExpires,
-	}, []byte("new html")); err != nil {
+	}, now, []byte("new html")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.GetPage(ctx, "upd123")
@@ -156,7 +156,7 @@ func TestUpdatePage(t *testing.T) {
 		t.Fatalf("file contents = %q", data)
 	}
 
-	if err := st.UpdatePage(ctx, "upd123", PageUpdate{Title: "permanent", Size: 1}, []byte("x")); err != nil {
+	if err := st.UpdatePage(ctx, "upd123", PageUpdate{Title: "permanent", Size: 1}, now, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	got, err = st.GetPage(ctx, "upd123")
@@ -167,8 +167,33 @@ func TestUpdatePage(t *testing.T) {
 		t.Fatalf("expires = %v, want nil", got.ExpiresAt)
 	}
 
-	if err := st.UpdatePage(ctx, "missing", PageUpdate{Title: "x", Size: 1}, []byte("x")); !errors.Is(err, ErrNotFound) {
+	if err := st.UpdatePage(ctx, "missing", PageUpdate{Title: "x", Size: 1}, now, []byte("x")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing page err = %v, want ErrNotFound", err)
+	}
+
+	expired := now.Add(-time.Hour)
+	stale := Page{Slug: "stale99", Title: "stale", FileName: "stale99.html", Size: 7, CreatedAt: now, ExpiresAt: &expired}
+	if err := st.CreatePage(ctx, stale, []byte("stale html")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdatePage(ctx, "stale99", PageUpdate{Title: "late", Size: 1}, now, []byte("x")); !errors.Is(err, ErrExpired) {
+		t.Fatalf("expired page err = %v, want ErrExpired", err)
+	}
+	got, err = st.GetPage(ctx, "stale99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "stale" || got.Size != 7 || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expired) {
+		t.Fatalf("expired update mutated page: %+v", got)
+	}
+	f, err = st.OpenPage(got.FileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ = io.ReadAll(f)
+	f.Close()
+	if string(data) != "stale html" {
+		t.Fatalf("file contents = %q, want %q", data, "stale html")
 	}
 }
 

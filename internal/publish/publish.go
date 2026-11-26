@@ -35,7 +35,7 @@ const slugAttempts = 8
 // in production; tests substitute an in-process implementation.
 type Pages interface {
 	CreatePage(ctx context.Context, p store.Page, html []byte) error
-	UpdatePage(ctx context.Context, slug string, u store.PageUpdate, html []byte) error
+	UpdatePage(ctx context.Context, slug string, u store.PageUpdate, now time.Time, html []byte) error
 }
 
 // Config holds the server's Page rules.
@@ -173,8 +173,8 @@ func (p *Publisher) Update(ctx context.Context, page *store.Page, req UpdateRequ
 		Title:     title,
 		Size:      int64(len(req.HTML)),
 		ExpiresAt: expires,
-	}, []byte(req.HTML))
-	if errors.Is(err, store.ErrNotFound) {
+	}, now, []byte(req.HTML))
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrExpired) {
 		return Result{}, err
 	}
 	if err != nil {
