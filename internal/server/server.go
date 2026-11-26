@@ -90,6 +90,7 @@ func (s *Server) routes() {
 		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
 	s.mux.HandleFunc("POST /api/pages", s.handlePublish)
+	s.mux.HandleFunc("PUT /api/pages/{slug}", s.handleUpdatePage)
 	s.mux.HandleFunc("GET /api/pages", s.handleListPages)
 	s.mux.HandleFunc("POST /api/pages/{slug}/expire", s.handleExpirePage)
 	s.mux.HandleFunc("DELETE /api/pages/{slug}", s.handleDeletePage)
@@ -234,6 +235,73 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
+	id, err := s.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "missing or invalid API key")
+		return
+	}
+	now := s.now()
+	if ok, retry := s.uploadLimiter.allow(id.rateKey(), now); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
+
+	slug := r.PathValue("slug")
+	page, err := s.pages.Load(r.Context(), pageCaller(id), slug, now)
+	if err != nil {
+		status, msg := pageHTTPError(err)
+		if status >= http.StatusInternalServerError {
+			s.logger.Printf("load page %s: %v", slug, err)
+		}
+		writeError(w, status, msg)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes+64*1024)
+	var req api.UpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, publish.ErrTooLarge.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	res, err := s.publisher.Update(r.Context(), page, publish.UpdateRequest{
+		HTML:       req.HTML,
+		Title:      req.Title,
+		TTLSeconds: req.TTLSeconds,
+		Permanent:  req.Permanent,
+	}, now)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, pages.ErrNotFound.Error())
+			return
+		}
+		if errors.Is(err, store.ErrExpired) {
+			writeError(w, http.StatusConflict, pages.ErrExpired.Error())
+			return
+		}
+		status, msg := publishHTTPError(err)
+		if status >= http.StatusInternalServerError {
+			s.logger.Printf("update page %s: %v", slug, err)
+		}
+		writeError(w, status, msg)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, api.PublishResponse{
+		Slug:      res.Slug,
+		URL:       strings.TrimRight(s.cfg.BaseURL, "/") + "/" + res.Slug,
+		ExpiresAt: res.ExpiresAt,
+		Protected: res.Protected,
+	})
+}
+
 // publishHTTPError maps the publish module's error modes onto HTTP. The module
 // does not know about HTTP; the adapter owns status codes and messages.
 func publishHTTPError(err error) (int, string) {
@@ -244,6 +312,8 @@ func publishHTTPError(err error) (int, string) {
 		return http.StatusRequestEntityTooLarge, publish.ErrTooLarge.Error()
 	case errors.Is(err, publish.ErrInvalidTTL):
 		return http.StatusBadRequest, publish.ErrInvalidTTL.Error()
+	case errors.Is(err, publish.ErrTTLConflict):
+		return http.StatusBadRequest, publish.ErrTTLConflict.Error()
 	case errors.Is(err, publish.ErrTTLTooLarge):
 		return http.StatusBadRequest, publish.ErrTTLTooLarge.Error()
 	case errors.Is(err, publish.ErrPassword):
@@ -348,6 +418,8 @@ func pageHTTPError(err error) (int, string) {
 		return http.StatusNotFound, pages.ErrNotFound.Error()
 	case errors.Is(err, pages.ErrExpired):
 		return http.StatusConflict, pages.ErrExpired.Error()
+	case errors.Is(err, pages.ErrLoad):
+		return http.StatusInternalServerError, pages.ErrLoad.Error()
 	case errors.Is(err, pages.ErrList):
 		return http.StatusInternalServerError, pages.ErrList.Error()
 	case errors.Is(err, pages.ErrExpire):
@@ -477,7 +549,9 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request, page *store.P
 	defer func() { _ = f.Close() }()
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeContent(w, r, page.FileName, page.CreatedAt, f)
+	// Content can change without CreatedAt changing. Exposing no modtime keeps
+	// a stale If-Modified-Since from turning an update into a 304.
+	http.ServeContent(w, r, page.FileName, time.Time{}, f)
 }
 
 func (s *Server) renderExpired(w http.ResponseWriter) {

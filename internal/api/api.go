@@ -11,6 +11,15 @@ type PublishRequest struct {
 	Permanent  bool   `json:"permanent,omitempty"`
 }
 
+// UpdateRequest replaces the content of an existing page. Empty Title and
+// TTLSeconds keep the page's current values; Permanent clears its expiry.
+type UpdateRequest struct {
+	HTML       string `json:"html"`
+	Title      string `json:"title,omitempty"`
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
+	Permanent  bool   `json:"permanent,omitempty"`
+}
+
 type PublishResponse struct {
 	Slug      string     `json:"slug"`
 	URL       string     `json:"url"`

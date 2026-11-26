@@ -15,3 +15,7 @@ _Avoid_: 有效期、过期时间、lifetime
 **默认 TTL**:
 未显式指定 TTL 时，服务端为 Page 采用的存活时长。
 _Avoid_: 缺省过期时间、默认有效期
+
+**Update**:
+用新 HTML 原地替换既有 Page 的内容；slug、链接、owner、密码和 created_at 不变，TTL 默认不变。
+_Avoid_: 重新发布、覆盖发布

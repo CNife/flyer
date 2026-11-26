@@ -1,6 +1,6 @@
 # flyer
 
-把本地 HTML 发布成可分享的网页。默认 1 小时过期，也可以永久；支持密码保护、二维码和命令行管理。
+把本地 HTML 发布成可分享的网页。默认 1 小时过期，也可以永久；支持密码保护、原地更新、二维码和命令行管理。
 
 服务端是单个 Go 二进制，页面存 SQLite + 本地文件。公网入口由 Caddy 终止 TLS 并反代到 `127.0.0.1:8787`。
 
@@ -171,6 +171,17 @@ stdout 只输出 URL，方便管道；元信息和二维码写到 stderr。终�
 
 `FLYER_SERVER`、`FLYER_KEY`、`FLYER_ADMIN_KEY`、`FLYER_PASSWORD` 可覆盖配置。
 
+### 更新
+
+```bash
+flyer update Ab3dE9xZ report.html
+flyer update https://flyer.cnife.cn/Ab3dE9xZ report.html --ttl 24h
+flyer update "$URL" report.html --permanent
+cat report.html | flyer update Ab3dE9xZ -
+```
+
+`update` 原地替换页面 HTML，slug 和链接不变；`created_at`、owner、密码保持原值。`--title` 改标题；不传 `--ttl`/`--permanent` 时保留原过期时间，传 `--ttl` 从当前时间重算，传 `--permanent` 改为永久。已过期页面返回 `409`，需要重新发布。
+
 ### 管理
 
 ```bash
@@ -228,6 +239,17 @@ curl -X DELETE "https://flyer.cnife.cn/api/pages/Ab3dE9xZ" \
   -H "Authorization: Bearer $FLYER_KEY"
 ```
 
+更新（保持链接不变）：
+
+```bash
+curl -X PUT https://flyer.cnife.cn/api/pages/Ab3dE9xZ \
+  -H "Authorization: Bearer $FLYER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"html":"<h1>v2</h1>","title":"周报","ttl_seconds":86400}'
+```
+
+返回 `200`，结构与发布响应相同。`title`、`ttl_seconds`、`permanent` 省略时保留原值；`permanent: true` 清空过期时间；过期页返回 `409`，别人的页或不存在返回 `404`。
+
 `GET /api/pages` 按 `created_at DESC, slug DESC` 排序，`limit` 默认 100、最大 500，`offset` 默认 0。响应包含 `pages`、`total`、`limit`、`offset`；永久页面的 `expires_at` 省略。
 
 管理端点（需要 admin key）：
@@ -238,12 +260,13 @@ curl -X DELETE "https://flyer.cnife.cn/api/pages/Ab3dE9xZ" \
 - `POST /api/admin/keys`
 - `DELETE /api/admin/keys/{id}`
 
-`DELETE /api/pages/{slug}` 和 `POST /api/pages/{slug}/expire` 允许页面所有者或 admin 操作；已过期页面再次 expire 返回 `409`。
+`PUT /api/pages/{slug}`、`DELETE /api/pages/{slug}` 和 `POST /api/pages/{slug}/expire` 允许页面所有者或 admin 操作；已过期页面再次 expire 或 update 返回 `409`。
 
 ## 行为
 
 - 默认 TTL 1 小时，最大 30 天；`permanent` 永不过期。
-- 单文件上限 10 MiB，每个 key 每小时 60 次上传。
+- `update` 原地替换 HTML，slug、URL、owner、密码和 `created_at` 不变；不显式改 TTL 时保留原过期时间。
+- 单文件上限 10 MiB，每个 key 每小时 60 次 publish/update。
 - 密码用 argon2id 哈希；解锁 cookie 1 小时，且不超过页面剩余寿命。
 - 过期后 24 小时内返回 `410 Gone`，之后返回 `404`；后台每 15 分钟清理。
 - 页面统一带 `X-Robots-Tag: noindex, nofollow, noarchive`，`/robots.txt` 禁止抓取。

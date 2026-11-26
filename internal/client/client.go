@@ -49,6 +49,14 @@ func (c *Client) Publish(ctx context.Context, req api.PublishRequest) (*api.Publ
 	return &out, nil
 }
 
+func (c *Client) Update(ctx context.Context, slug string, req api.UpdateRequest) (*api.PublishResponse, error) {
+	var out api.PublishResponse
+	if err := c.do(ctx, http.MethodPut, "/api/pages/"+url.PathEscape(slug), req, &out, false); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) DeletePage(ctx context.Context, slug string) error {
 	return c.do(ctx, http.MethodDelete, "/api/pages/"+url.PathEscape(slug), nil, nil, false)
 }

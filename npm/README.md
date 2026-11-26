@@ -17,9 +17,13 @@ flyer publish report.html --ttl 24h
 flyer publish report.html --permanent
 flyer publish report.html --password secret
 cat report.html | flyer publish -
+flyer update <url-or-slug> report.html
+flyer update <url-or-slug> report.html --ttl 24h
 ```
 
 `stdout` is only the URL; metadata and the QR code go to `stderr`. Use `--no-qr` in scripts and `--json` for structured output.
+
+`update` replaces the HTML at the same URL; the slug and link do not change. Omitted metadata keeps its current value.
 
 Connect to a server:
 

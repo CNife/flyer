@@ -21,6 +21,7 @@ var (
 	ErrEmptyHTML     = errors.New("html must not be empty")
 	ErrTooLarge      = errors.New("page is too large")
 	ErrInvalidTTL    = errors.New("ttl_seconds must not be negative")
+	ErrTTLConflict   = errors.New("permanent and ttl_seconds are mutually exclusive")
 	ErrTTLTooLarge   = errors.New("ttl exceeds server maximum")
 	ErrPassword      = errors.New("password is too long")
 	ErrSlug          = errors.New("could not generate slug")
@@ -34,6 +35,7 @@ const slugAttempts = 8
 // in production; tests substitute an in-process implementation.
 type Pages interface {
 	CreatePage(ctx context.Context, p store.Page, html []byte) error
+	UpdatePage(ctx context.Context, slug string, u store.PageUpdate, now time.Time, html []byte) error
 }
 
 // Config holds the server's Page rules.
@@ -70,6 +72,15 @@ type Request struct {
 	Now        time.Time
 }
 
+// UpdateRequest replaces the content of an existing Page. Empty Title and
+// zero TTLSeconds keep the Page's current values; Permanent clears its expiry.
+type UpdateRequest struct {
+	HTML       string
+	Title      string
+	TTLSeconds int64
+	Permanent  bool
+}
+
 // Result is what the caller needs to build the response.
 type Result struct {
 	Slug      string
@@ -81,14 +92,11 @@ type Result struct {
 // password hashing, title defaulting and slug allocation all live here and are
 // invisible to callers.
 func (p *Publisher) Publish(ctx context.Context, req Request) (Result, error) {
-	if strings.TrimSpace(req.HTML) == "" {
-		return Result{}, ErrEmptyHTML
+	if err := p.validateHTML(req.HTML); err != nil {
+		return Result{}, err
 	}
-	if int64(len(req.HTML)) > p.cfg.MaxHTMLBytes {
-		return Result{}, ErrTooLarge
-	}
-	if req.TTLSeconds < 0 {
-		return Result{}, ErrInvalidTTL
+	if err := p.validateTTL(req.TTLSeconds); err != nil {
+		return Result{}, err
 	}
 
 	var expires *time.Time
@@ -141,4 +149,75 @@ func (p *Publisher) Publish(ctx context.Context, req Request) (Result, error) {
 		return Result{Slug: candidate, ExpiresAt: expires, Protected: passwordHash != ""}, nil
 	}
 	return Result{}, ErrSlugExhausted
+}
+
+// Update replaces page's HTML and applies the request's optional metadata
+// changes. The caller must have authorized the Page and confirmed it is live;
+// Update enforces content rules and writes through the Pages adapter.
+func (p *Publisher) Update(ctx context.Context, page *store.Page, req UpdateRequest, now time.Time) (Result, error) {
+	if err := p.validateHTML(req.HTML); err != nil {
+		return Result{}, err
+	}
+	if err := p.validateTTL(req.TTLSeconds); err != nil {
+		return Result{}, err
+	}
+	expires, err := p.updateExpiry(page, req, now)
+	if err != nil {
+		return Result{}, err
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = page.Title
+	}
+	err = p.pages.UpdatePage(ctx, page.Slug, store.PageUpdate{
+		Title:     title,
+		Size:      int64(len(req.HTML)),
+		ExpiresAt: expires,
+	}, now, []byte(req.HTML))
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrExpired) {
+		return Result{}, err
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	return Result{Slug: page.Slug, ExpiresAt: expires, Protected: page.PasswordHash != ""}, nil
+}
+
+func (p *Publisher) updateExpiry(page *store.Page, req UpdateRequest, now time.Time) (*time.Time, error) {
+	if req.Permanent && req.TTLSeconds > 0 {
+		return nil, ErrTTLConflict
+	}
+	if req.Permanent {
+		return nil, nil
+	}
+	if req.TTLSeconds == 0 {
+		if page.ExpiresAt == nil {
+			return nil, nil
+		}
+		kept := *page.ExpiresAt
+		return &kept, nil
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if ttl > p.cfg.MaxTTL {
+		return nil, ErrTTLTooLarge
+	}
+	expires := now.Add(ttl)
+	return &expires, nil
+}
+
+func (p *Publisher) validateHTML(html string) error {
+	if strings.TrimSpace(html) == "" {
+		return ErrEmptyHTML
+	}
+	if int64(len(html)) > p.cfg.MaxHTMLBytes {
+		return ErrTooLarge
+	}
+	return nil
+}
+
+func (p *Publisher) validateTTL(ttlSeconds int64) error {
+	if ttlSeconds < 0 {
+		return ErrInvalidTTL
+	}
+	return nil
 }

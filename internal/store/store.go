@@ -31,6 +31,14 @@ type Page struct {
 	ExpiresAt    *time.Time
 }
 
+// PageUpdate carries the mutable metadata of an existing Page. The new HTML
+// is passed separately to UpdatePage.
+type PageUpdate struct {
+	Title     string
+	Size      int64
+	ExpiresAt *time.Time
+}
+
 type Key struct {
 	ID        int64
 	Name      string
@@ -117,27 +125,11 @@ func (s *Store) CreatePage(ctx context.Context, p Page, html []byte) error {
 	if filepath.Base(p.FileName) != p.FileName || p.FileName == "" {
 		return errors.New("invalid page file name")
 	}
-	tmp, err := os.CreateTemp(s.pagesDir, ".upload-*")
+	tmpName, err := s.writeTempPage(html)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(html); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o640); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
 	dest := filepath.Join(s.pagesDir, p.FileName)
 	if err := os.Link(tmpName, dest); err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -158,6 +150,85 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		return err
 	}
 	return nil
+}
+
+// writeTempPage writes html to a synced temporary file inside pagesDir and
+// returns its path. Callers move it into place and remove it on failure.
+func (s *Store) writeTempPage(html []byte) (string, error) {
+	tmp, err := os.CreateTemp(s.pagesDir, ".upload-*")
+	if err != nil {
+		return "", err
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(html); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := tmp.Chmod(0o640); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
+// UpdatePage replaces the HTML and writable metadata of slug while keeping its
+// identity, owner, password, and creation time. The UPDATE carries an expiry
+// guard so an expired Page is rejected before its file is touched; the file is
+// replaced by an atomic rename only after the new content is fully written,
+// synced, and the metadata update has succeeded.
+func (s *Store) UpdatePage(ctx context.Context, slug string, u PageUpdate, now time.Time, html []byte) error {
+	tmpName, err := s.writeTempPage(html)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmpName) }()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var fileName string
+	if err := tx.QueryRowContext(ctx, `SELECT file_name FROM pages WHERE slug = ?`, slug).Scan(&fileName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if filepath.Base(fileName) != fileName || fileName == "" {
+		return errors.New("invalid page file name")
+	}
+	res, err := tx.ExecContext(ctx, `
+UPDATE pages SET title = ?, size = ?, expires_at = ?
+WHERE slug = ? AND (expires_at IS NULL OR expires_at > ?)`,
+		u.Title, u.Size, unixPtr(u.ExpiresAt), slug, now.Unix())
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrExpired
+	}
+	dest := filepath.Join(s.pagesDir, fileName)
+	if err := os.Rename(tmpName, dest); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) OpenPage(fileName string) (*os.File, error) {
