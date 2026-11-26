@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"github.com/mdp/qrterminal/v3"
 
 	"github.com/CNife/flyer/internal/api"
+	"github.com/CNife/flyer/internal/auth"
 	"github.com/CNife/flyer/internal/client"
 	"github.com/CNife/flyer/internal/config"
 	"github.com/CNife/flyer/internal/server"
@@ -44,6 +46,8 @@ func Run(args []string) error {
 	switch args[0] {
 	case "publish", "pub":
 		return cmdPublish(c, args[1:])
+	case "update":
+		return cmdUpdate(c, args[1:])
 	case "list", "ls":
 		return cmdList(c, args[1:])
 	case "open":
@@ -76,6 +80,7 @@ func Run(args []string) error {
 // output and assembly can be exercised without a server or real config file.
 type apiClient interface {
 	Publish(ctx context.Context, req api.PublishRequest) (*api.PublishResponse, error)
+	Update(ctx context.Context, slug string, req api.UpdateRequest) (*api.PublishResponse, error)
 	ListPages(ctx context.Context, limit, offset int) (*api.PageListResponse, error)
 	PageStatus(ctx context.Context, slug string) (int, error)
 	ExpirePage(ctx context.Context, slug string) (*api.ExpirePageResponse, error)
@@ -180,6 +185,7 @@ func printUsage() {
 
 Usage:
   flyer publish [file] [flags]     publish a file (or stdin with -)
+  flyer update <slug|url> [file]   update a page in place, keeping its URL
   flyer list [flags]               list pages you own
   flyer open <slug>                open a live page in the browser
   flyer expire <slug>...           expire pages now
@@ -212,6 +218,11 @@ Publish examples:
   flyer publish report.html --no-qr
   flyer publish report.html --json
   cat report.html | flyer publish -
+
+Update examples:
+  flyer update Ab3dE9xZ report.html
+  flyer update https://flyer.cnife.cn/Ab3dE9xZ report.html --ttl 24h
+  cat report.html | flyer update Ab3dE9xZ -
 
 Flags can appear before or after the file name. stdout is only the URL;
 metadata and the QR code go to stderr. Use "flyer <command> --help" for flags.
@@ -301,7 +312,7 @@ Examples:
 	if err != nil {
 		return err
 	}
-	html, name, err := readHTML(fs.Args())
+	html, name, err := readHTML(fs.Args(), "usage: flyer publish [file]")
 	if err != nil {
 		return err
 	}
@@ -336,15 +347,7 @@ Examples:
 		return c.printJSON(resp)
 	}
 	fmt.Fprintln(c.out, resp.URL)
-	fmt.Fprintf(c.errOut, "slug: %s\n", resp.Slug)
-	if resp.ExpiresAt == nil {
-		fmt.Fprintln(c.errOut, "expires: never")
-	} else {
-		fmt.Fprintf(c.errOut, "expires: %s (%s)\n",
-			resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"),
-			time.Until(*resp.ExpiresAt).Round(time.Minute))
-	}
-	fmt.Fprintf(c.errOut, "protected: %s\n", yesNo(resp.Protected))
+	printPageMeta(c, resp)
 	if !*noQR && (*forceQR || c.stderrIsTerminal) {
 		qrterminal.GenerateWithConfig(resp.URL, qrterminal.Config{
 			Level:      qrterminal.L,
@@ -354,6 +357,94 @@ Examples:
 		})
 	}
 	return nil
+}
+
+func cmdUpdate(c *command, args []string) error {
+	fs := c.flagSet("update")
+	serverFlag := fs.String("server", "", "server URL")
+	keyFlag := fs.String("key", "", "API key")
+	title := fs.String("title", "", "new page title (default: keep current)")
+	ttl := fs.String("ttl", "", "new time to live (e.g. 1h, 24h, 3600)")
+	permanent := fs.Bool("permanent", false, "make the page never expire")
+	jsonOut := fs.Bool("json", false, "print JSON instead of a URL")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: flyer update <slug|url> [file] [flags]
+
+Replace a page's HTML in place. Its slug and URL do not change; omitted
+metadata keeps its current value.
+
+Flags:
+`)
+		fs.PrintDefaults()
+		fmt.Fprint(fs.Output(), `
+Examples:
+  flyer update Ab3dE9xZ report.html
+  flyer update https://flyer.cnife.cn/Ab3dE9xZ report.html --ttl 24h
+  flyer update "$URL" report.html --permanent
+  cat report.html | flyer update Ab3dE9xZ -
+`)
+	}
+	if err := parseFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if *permanent && *ttl != "" {
+		return errors.New("--permanent and --ttl are mutually exclusive")
+	}
+	if fs.NArg() < 1 {
+		return errors.New("usage: flyer update <slug|url> [file]")
+	}
+	slug, err := parsePageRef(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	cl, err := c.publisher(*serverFlag, *keyFlag)
+	if err != nil {
+		return err
+	}
+	html, _, err := readHTML(fs.Args()[1:], "usage: flyer update <slug|url> [file]")
+	if err != nil {
+		return err
+	}
+	req := api.UpdateRequest{
+		HTML:      string(html),
+		Title:     strings.TrimSpace(*title),
+		Permanent: *permanent,
+	}
+	if *ttl != "" {
+		secs, err := parseTTL(*ttl)
+		if err != nil {
+			return err
+		}
+		if secs == 0 {
+			return errors.New("--ttl must be positive for update")
+		}
+		req.TTLSeconds = secs
+	}
+	resp, err := cl.Update(context.Background(), slug, req)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return c.printJSON(resp)
+	}
+	fmt.Fprintln(c.out, resp.URL)
+	printPageMeta(c, resp)
+	return nil
+}
+
+func printPageMeta(c *command, resp *api.PublishResponse) {
+	fmt.Fprintf(c.errOut, "slug: %s\n", resp.Slug)
+	if resp.ExpiresAt == nil {
+		fmt.Fprintln(c.errOut, "expires: never")
+	} else {
+		fmt.Fprintf(c.errOut, "expires: %s (%s)\n",
+			resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"),
+			time.Until(*resp.ExpiresAt).Round(time.Minute))
+	}
+	fmt.Fprintf(c.errOut, "protected: %s\n", yesNo(resp.Protected))
 }
 
 func cmdList(c *command, args []string) error {
@@ -989,9 +1080,22 @@ func parseTTL(value string) (int64, error) {
 	return int64(d.Seconds()), nil
 }
 
-func readHTML(args []string) ([]byte, string, error) {
+func parsePageRef(ref string) (string, error) {
+	if auth.ValidSlug(ref) {
+		return ref, nil
+	}
+	if u, err := url.Parse(ref); err == nil {
+		slug := path.Base(strings.TrimRight(u.Path, "/"))
+		if auth.ValidSlug(slug) {
+			return slug, nil
+		}
+	}
+	return "", fmt.Errorf("invalid page %q: expected a slug or a flyer URL", ref)
+}
+
+func readHTML(args []string, usage string) ([]byte, string, error) {
 	if len(args) > 1 {
-		return nil, "", errors.New("usage: flyer publish [file]")
+		return nil, "", errors.New(usage)
 	}
 	if len(args) == 1 && args[0] != "-" {
 		data, err := os.ReadFile(args[0])

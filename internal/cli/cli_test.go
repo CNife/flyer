@@ -60,6 +60,35 @@ func TestParseFlagsInterspersed(t *testing.T) {
 	}
 }
 
+func TestParsePageRef(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"Ab3dE9xZ", "Ab3dE9xZ", false},
+		{"https://flyer.cnife.cn/Ab3dE9xZ", "Ab3dE9xZ", false},
+		{"https://flyer.cnife.cn/Ab3dE9xZ/", "Ab3dE9xZ", false},
+		{"https://flyer.cnife.cn/Ab3dE9xZ?x=1#top", "Ab3dE9xZ", false},
+		{"abc", "", true},
+		{"https://flyer.cnife.cn/", "", true},
+		{"https://flyer.cnife.cn/abc", "", true},
+		{"", "", true},
+	}
+	for _, c := range cases {
+		got, err := parsePageRef(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%q: expected error, got %q", c.in, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%q: got %q, err %v; want %q", c.in, got, err, c.want)
+		}
+	}
+}
+
 func TestMaskKey(t *testing.T) {
 	if got := maskKey(""); got != "(not set)" {
 		t.Fatalf("empty mask = %q", got)

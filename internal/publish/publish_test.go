@@ -24,10 +24,18 @@ type pageCall struct {
 	html string
 }
 
+type updateCall struct {
+	slug   string
+	update store.PageUpdate
+	html   string
+}
+
 // fakePages is the in-process adapter behind the seam.
 type fakePages struct {
-	calls []pageCall
-	err   func(call int) error
+	calls     []pageCall
+	updates   []updateCall
+	err       func(call int) error
+	updateErr error
 }
 
 func (f *fakePages) CreatePage(_ context.Context, p store.Page, html []byte) error {
@@ -36,6 +44,11 @@ func (f *fakePages) CreatePage(_ context.Context, p store.Page, html []byte) err
 		return f.err(len(f.calls))
 	}
 	return nil
+}
+
+func (f *fakePages) UpdatePage(_ context.Context, slug string, u store.PageUpdate, html []byte) error {
+	f.updates = append(f.updates, updateCall{slug: slug, update: u, html: string(html)})
+	return f.updateErr
 }
 
 func testPublisher(t *testing.T, pages Pages) *Publisher {
@@ -296,4 +309,139 @@ func TestPageAssembly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func existingPage() *store.Page {
+	expires := fixedNow.Add(3 * time.Hour)
+	owner := int64(7)
+	return &store.Page{
+		Slug:         "keep1234",
+		Title:        "Old title",
+		FileName:     "keep1234.html",
+		PasswordHash: "hash-password",
+		OwnerKeyID:   &owner,
+		Size:         9,
+		CreatedAt:    fixedNow.Add(-time.Hour),
+		ExpiresAt:    &expires,
+	}
+}
+
+func TestUpdateRules(t *testing.T) {
+	t.Run("keeps title and expiry", func(t *testing.T) {
+		pages := &fakePages{}
+		page := existingPage()
+		got, err := testPublisher(t, pages).Update(context.Background(), page,
+			UpdateRequest{HTML: "<h1>new</h1>"}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pages.updates) != 1 {
+			t.Fatalf("updates = %d, want 1", len(pages.updates))
+		}
+		call := pages.updates[0]
+		if call.slug != page.Slug || call.update.Title != page.Title {
+			t.Fatalf("slug/title = %q/%q", call.slug, call.update.Title)
+		}
+		if call.update.Size != int64(len("<h1>new</h1>")) || call.html != "<h1>new</h1>" {
+			t.Fatalf("size/html = %d/%q", call.update.Size, call.html)
+		}
+		if call.update.ExpiresAt == nil || !call.update.ExpiresAt.Equal(*page.ExpiresAt) {
+			t.Fatalf("expiry = %v, want %v", call.update.ExpiresAt, page.ExpiresAt)
+		}
+		if got.Slug != page.Slug || got.ExpiresAt == nil || !got.ExpiresAt.Equal(*page.ExpiresAt) || !got.Protected {
+			t.Fatalf("result = %+v", got)
+		}
+	})
+
+	t.Run("overrides title and expiry", func(t *testing.T) {
+		pages := &fakePages{}
+		page := existingPage()
+		got, err := testPublisher(t, pages).Update(context.Background(), page,
+			UpdateRequest{HTML: "<h1>new</h1>", Title: "  New title  ", TTLSeconds: 7200}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := pages.updates[0]
+		if call.update.Title != "New title" {
+			t.Fatalf("title = %q", call.update.Title)
+		}
+		want := fixedNow.Add(2 * time.Hour)
+		if call.update.ExpiresAt == nil || !call.update.ExpiresAt.Equal(want) {
+			t.Fatalf("expiry = %v, want %v", call.update.ExpiresAt, want)
+		}
+		if got.ExpiresAt == nil || !got.ExpiresAt.Equal(want) {
+			t.Fatalf("result expiry = %v", got.ExpiresAt)
+		}
+	})
+
+	t.Run("permanent clears expiry", func(t *testing.T) {
+		pages := &fakePages{}
+		page := existingPage()
+		got, err := testPublisher(t, pages).Update(context.Background(), page,
+			UpdateRequest{HTML: "<h1>new</h1>", Permanent: true}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pages.updates[0].update.ExpiresAt != nil || got.ExpiresAt != nil {
+			t.Fatalf("expiry = %v", pages.updates[0].update.ExpiresAt)
+		}
+	})
+
+	t.Run("permanent page stays permanent", func(t *testing.T) {
+		pages := &fakePages{}
+		page := existingPage()
+		page.ExpiresAt = nil
+		got, err := testPublisher(t, pages).Update(context.Background(), page,
+			UpdateRequest{HTML: "<h1>new</h1>"}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pages.updates[0].update.ExpiresAt != nil || got.ExpiresAt != nil {
+			t.Fatal("permanent page gained an expiry")
+		}
+	})
+
+	t.Run("validation", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			req     UpdateRequest
+			wantErr error
+		}{
+			{"empty html", UpdateRequest{HTML: " \n\t "}, ErrEmptyHTML},
+			{"html over limit", UpdateRequest{HTML: strings.Repeat("a", maxHTMLBytes+1)}, ErrTooLarge},
+			{"negative ttl", UpdateRequest{HTML: "<h1>x</h1>", TTLSeconds: -1}, ErrInvalidTTL},
+			{"ttl over maximum", UpdateRequest{HTML: "<h1>x</h1>", TTLSeconds: int64(maxTTL/time.Second) + 1}, ErrTTLTooLarge},
+			{"permanent with ttl", UpdateRequest{HTML: "<h1>x</h1>", TTLSeconds: 3600, Permanent: true}, ErrTTLConflict},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				pages := &fakePages{}
+				_, err := testPublisher(t, pages).Update(context.Background(), existingPage(), tc.req, fixedNow)
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				if len(pages.updates) != 0 {
+					t.Fatalf("persisted %d updates on invalid request", len(pages.updates))
+				}
+			})
+		}
+	})
+
+	t.Run("store not found is passed through", func(t *testing.T) {
+		pages := &fakePages{updateErr: store.ErrNotFound}
+		_, err := testPublisher(t, pages).Update(context.Background(), existingPage(),
+			UpdateRequest{HTML: "<h1>new</h1>"}, fixedNow)
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("err = %v, want store.ErrNotFound", err)
+		}
+	})
+
+	t.Run("storage failure", func(t *testing.T) {
+		pages := &fakePages{updateErr: errors.New("disk full")}
+		_, err := testPublisher(t, pages).Update(context.Background(), existingPage(),
+			UpdateRequest{HTML: "<h1>new</h1>"}, fixedNow)
+		if !errors.Is(err, ErrStore) {
+			t.Fatalf("err = %v, want ErrStore", err)
+		}
+	})
 }

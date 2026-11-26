@@ -21,6 +21,7 @@ import (
 var (
 	ErrNotFound = errors.New("page not found")
 	ErrExpired  = errors.New("page already expired")
+	ErrLoad     = errors.New("could not load page")
 	ErrList     = errors.New("could not list pages")
 	ErrExpire   = errors.New("could not expire page")
 	ErrDelete   = errors.New("could not delete page")
@@ -75,7 +76,7 @@ func (m *Manager) List(ctx context.Context, caller Caller, limit, offset int) (a
 // Expire makes slug expire at now. A Page the caller does not own is reported
 // as not found, so ownership cannot be probed through the API.
 func (m *Manager) Expire(ctx context.Context, caller Caller, slug string, now time.Time) (api.ExpirePageResponse, error) {
-	if err := m.authorize(ctx, caller, slug); err != nil {
+	if _, err := m.authorize(ctx, caller, slug); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return api.ExpirePageResponse{}, ErrNotFound
 		}
@@ -97,7 +98,7 @@ func (m *Manager) Expire(ctx context.Context, caller Caller, slug string, now ti
 // Delete removes slug. A Page the caller does not own is reported as not found,
 // so ownership cannot be probed through the API.
 func (m *Manager) Delete(ctx context.Context, caller Caller, slug string) (api.DeletePageResponse, error) {
-	if err := m.authorize(ctx, caller, slug); err != nil {
+	if _, err := m.authorize(ctx, caller, slug); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return api.DeletePageResponse{}, ErrNotFound
 		}
@@ -115,21 +116,38 @@ func (m *Manager) Delete(ctx context.Context, caller Caller, slug string) (api.D
 // authorize enforces the ownership rule. Every failure the caller can probe —
 // malformed slug, missing Page, foreign Page — surfaces as ErrNotFound; store
 // failures surface raw so the caller can attach its operation's error mode.
-func (m *Manager) authorize(ctx context.Context, caller Caller, slug string) error {
+func (m *Manager) authorize(ctx context.Context, caller Caller, slug string) (*store.Page, error) {
 	if !auth.ValidSlug(slug) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	page, err := m.store.GetPage(ctx, slug)
 	if errors.Is(err, store.ErrNotFound) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !canManage(caller, page) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	return nil
+	return page, nil
+}
+
+// Load returns the Page for slug if caller may manage it and it has not expired.
+// A Page the caller does not own is reported as not found, so ownership cannot
+// be probed through the API.
+func (m *Manager) Load(ctx context.Context, caller Caller, slug string, now time.Time) (*store.Page, error) {
+	page, err := m.authorize(ctx, caller, slug)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("%w: %w", ErrLoad, err)
+	}
+	if page.ExpiresAt != nil && !now.Before(*page.ExpiresAt) {
+		return nil, ErrExpired
+	}
+	return page, nil
 }
 
 func canManage(caller Caller, page *store.Page) bool {

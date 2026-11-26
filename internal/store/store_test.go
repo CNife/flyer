@@ -99,6 +99,79 @@ func TestDuplicateSlugDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestUpdatePage(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0)
+	key, err := st.CreateKey(ctx, "owner", "publisher", "hash-owner", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := now.Add(time.Hour)
+	page := Page{
+		Slug:         "upd123",
+		Title:        "old title",
+		FileName:     "upd123.html",
+		PasswordHash: "hash-password",
+		OwnerKeyID:   &key.ID,
+		Size:         3,
+		CreatedAt:    now,
+		ExpiresAt:    &expires,
+	}
+	if err := st.CreatePage(ctx, page, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+
+	newExpires := now.Add(3 * time.Hour)
+	if err := st.UpdatePage(ctx, "upd123", PageUpdate{
+		Title:     "new title",
+		Size:      8,
+		ExpiresAt: &newExpires,
+	}, []byte("new html")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetPage(ctx, "upd123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "new title" || got.Size != 8 {
+		t.Fatalf("title/size = %q/%d", got.Title, got.Size)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(newExpires) {
+		t.Fatalf("expires = %v, want %v", got.ExpiresAt, newExpires)
+	}
+	if got.FileName != page.FileName || !got.CreatedAt.Equal(page.CreatedAt) || got.PasswordHash != page.PasswordHash {
+		t.Fatalf("identity changed: %+v", got)
+	}
+	if got.OwnerKeyID == nil || *got.OwnerKeyID != key.ID {
+		t.Fatalf("owner = %v, want %d", got.OwnerKeyID, key.ID)
+	}
+	f, err := st.OpenPage(got.FileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(f)
+	f.Close()
+	if string(data) != "new html" {
+		t.Fatalf("file contents = %q", data)
+	}
+
+	if err := st.UpdatePage(ctx, "upd123", PageUpdate{Title: "permanent", Size: 1}, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetPage(ctx, "upd123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt != nil {
+		t.Fatalf("expires = %v, want nil", got.ExpiresAt)
+	}
+
+	if err := st.UpdatePage(ctx, "missing", PageUpdate{Title: "x", Size: 1}, []byte("x")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing page err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestCleanupHonorsGrace(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
